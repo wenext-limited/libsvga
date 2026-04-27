@@ -164,6 +164,19 @@ pub const RenderCommand = extern struct {
     transform: Transform = .{},
 };
 
+pub const RenderItem = extern struct {
+    sprite_index: u32 = 0,
+    frame_index: u32 = 0,
+    shape_frame_index: u32 = 0,
+    opacity: f32 = 0,
+    bounds: Layout = .{},
+    transform: Transform = .{},
+    is_matte: u8 = 0,
+    has_matte: u8 = 0,
+    has_clip_path: u8 = 0,
+    has_shapes: u8 = 0,
+};
+
 const RenderCommandRange = struct {
     start: usize = 0,
     count: usize = 0,
@@ -171,11 +184,15 @@ const RenderCommandRange = struct {
 
 const RenderData = struct {
     commands: []RenderCommand,
-    ranges: []RenderCommandRange,
+    command_ranges: []RenderCommandRange,
+    items: []RenderItem,
+    item_ranges: []RenderCommandRange,
 
     fn deinit(self: RenderData, allocator: std.mem.Allocator) void {
         allocator.free(self.commands);
-        allocator.free(self.ranges);
+        allocator.free(self.command_ranges);
+        allocator.free(self.items);
+        allocator.free(self.item_ranges);
     }
 };
 
@@ -203,6 +220,8 @@ pub const Movie = struct {
     audios: []Audio,
     render_commands: []RenderCommand,
     render_frame_ranges: []RenderCommandRange,
+    render_items: []RenderItem,
+    render_item_frame_ranges: []RenderCommandRange,
 
     pub fn init(allocator: std.mem.Allocator, spec: MovieSpec) !Movie {
         try validateSpec(spec);
@@ -262,13 +281,17 @@ pub const Movie = struct {
             .sprites = sprites,
             .audios = audios,
             .render_commands = render_data.commands,
-            .render_frame_ranges = render_data.ranges,
+            .render_frame_ranges = render_data.command_ranges,
+            .render_items = render_data.items,
+            .render_item_frame_ranges = render_data.item_ranges,
         };
     }
 
     pub fn deinit(self: *Movie, allocator: std.mem.Allocator) void {
         allocator.free(self.render_commands);
         allocator.free(self.render_frame_ranges);
+        allocator.free(self.render_items);
+        allocator.free(self.render_item_frame_ranges);
         for (self.assets) |*asset| {
             asset.deinit(allocator);
         }
@@ -325,6 +348,12 @@ pub const Movie = struct {
         if (frame_index >= self.render_frame_ranges.len) return null;
         const range = self.render_frame_ranges[frame_index];
         return self.render_commands[range.start .. range.start + range.count];
+    }
+
+    pub fn renderItems(self: *const Movie, frame_index: usize) ?[]const RenderItem {
+        if (frame_index >= self.render_item_frame_ranges.len) return null;
+        const range = self.render_item_frame_ranges[frame_index];
+        return self.render_items[range.start .. range.start + range.count];
     }
 };
 
@@ -452,6 +481,17 @@ pub const OwnedFrame = struct {
         allocator.free(self.clip_path);
         self.* = undefined;
     }
+
+    pub fn isKeepFrame(self: *const OwnedFrame) bool {
+        return self.frame.is_keep_frame != 0 or self.frame.first_shape_type == @intFromEnum(ShapeType.keep);
+    }
+
+    pub fn hasDrawableShapes(self: *const OwnedFrame) bool {
+        for (self.shapes) |shape| {
+            if (shape.shape_type != .keep and shape.shape_type != .unknown) return true;
+        }
+        return false;
+    }
 };
 
 pub const Shape = struct {
@@ -488,46 +528,82 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
     var command_counts = try allocator.alloc(usize, frame_count);
     defer allocator.free(command_counts);
     @memset(command_counts, 0);
+    var item_counts = try allocator.alloc(usize, frame_count);
+    defer allocator.free(item_counts);
+    @memset(item_counts, 0);
 
     for (sprites, 0..) |sprite, sprite_index| {
+        var shape_frame_index: usize = 0;
         for (sprite.frames[0..@min(frame_count, sprite.frames.len)], 0..) |owned_frame, frame_index| {
+            if (!owned_frame.isKeepFrame()) {
+                shape_frame_index = frame_index;
+            }
             if (renderCommandForFrame(sprite_index, owned_frame.frame) != null) {
                 command_counts[frame_index] += 1;
+            }
+            if (renderItemForFrame(&sprite, sprite_index, frame_index, shape_frame_index) != null) {
+                item_counts[frame_index] += 1;
             }
         }
     }
 
-    var ranges = try allocator.alloc(RenderCommandRange, frame_count);
-    errdefer allocator.free(ranges);
+    var command_ranges = try allocator.alloc(RenderCommandRange, frame_count);
+    errdefer allocator.free(command_ranges);
+    var item_ranges = try allocator.alloc(RenderCommandRange, frame_count);
+    errdefer allocator.free(item_ranges);
 
     var command_total: usize = 0;
     for (command_counts, 0..) |count, frame_index| {
-        ranges[frame_index] = .{
+        command_ranges[frame_index] = .{
             .start = command_total,
             .count = count,
         };
         command_total += count;
     }
+    var item_total: usize = 0;
+    for (item_counts, 0..) |count, frame_index| {
+        item_ranges[frame_index] = .{
+            .start = item_total,
+            .count = count,
+        };
+        item_total += count;
+    }
 
     var commands = try allocator.alloc(RenderCommand, command_total);
     errdefer allocator.free(commands);
+    var items = try allocator.alloc(RenderItem, item_total);
+    errdefer allocator.free(items);
 
-    for (ranges, 0..) |range, frame_index| {
+    for (command_ranges, 0..) |range, frame_index| {
         command_counts[frame_index] = range.start;
+    }
+    for (item_ranges, 0..) |range, frame_index| {
+        item_counts[frame_index] = range.start;
     }
 
     for (sprites, 0..) |sprite, sprite_index| {
+        var shape_frame_index: usize = 0;
         for (sprite.frames[0..@min(frame_count, sprite.frames.len)], 0..) |owned_frame, frame_index| {
+            if (!owned_frame.isKeepFrame()) {
+                shape_frame_index = frame_index;
+            }
             const command = renderCommandForFrame(sprite_index, owned_frame.frame) orelse continue;
             const command_index = command_counts[frame_index];
             commands[command_index] = command;
             command_counts[frame_index] += 1;
+
+            const item = renderItemForFrame(&sprite, sprite_index, frame_index, shape_frame_index) orelse continue;
+            const item_index = item_counts[frame_index];
+            items[item_index] = item;
+            item_counts[frame_index] += 1;
         }
     }
 
     return .{
         .commands = commands,
-        .ranges = ranges,
+        .command_ranges = command_ranges,
+        .items = items,
+        .item_ranges = item_ranges,
     };
 }
 
@@ -540,6 +616,26 @@ fn renderCommandForFrame(sprite_index: usize, frame: Frame) ?RenderCommand {
         .opacity = frame.alpha,
         .bounds = frame.layout,
         .transform = frame.transform,
+    };
+}
+
+fn renderItemForFrame(sprite: *const Sprite, sprite_index: usize, frame_index: usize, shape_frame_index: usize) ?RenderItem {
+    if (frame_index >= sprite.frames.len) return null;
+    const owned_frame = &sprite.frames[frame_index];
+    const command = renderCommandForFrame(sprite_index, owned_frame.frame) orelse return null;
+    const shape_frame = &sprite.frames[@min(shape_frame_index, sprite.frames.len - 1)];
+
+    return .{
+        .sprite_index = command.sprite_index,
+        .frame_index = @intCast(frame_index),
+        .shape_frame_index = @intCast(shape_frame_index),
+        .opacity = command.opacity,
+        .bounds = command.bounds,
+        .transform = command.transform,
+        .is_matte = if (sprite.isMatte()) 1 else 0,
+        .has_matte = if (sprite.matte_key.len > 0) 1 else 0,
+        .has_clip_path = if (owned_frame.clip_path.len > 0) 1 else 0,
+        .has_shapes = if (shape_frame.hasDrawableShapes()) 1 else 0,
     };
 }
 
@@ -626,6 +722,70 @@ test "movie metadata can be validated and owned" {
     try std.testing.expectEqual(@as(f32, 1), commands[0].opacity);
     try std.testing.expectEqual(@as(f32, 10), commands[0].bounds.x);
     try std.testing.expectEqual(@as(f32, 30), commands[0].bounds.width);
+
+    const items = movie.renderItems(0).?;
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqual(@as(u32, 0), items[0].sprite_index);
+    try std.testing.expectEqual(@as(u32, 0), items[0].frame_index);
+    try std.testing.expectEqual(@as(u32, 0), items[0].shape_frame_index);
+    try std.testing.expectEqual(@as(u8, 0), items[0].is_matte);
+    try std.testing.expectEqual(@as(u8, 0), items[0].has_matte);
+}
+
+test "render items resolve keep-frame shape source once" {
+    const allocator = std.testing.allocator;
+    var movie = try Movie.init(allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 2,
+        .sprite_count = 1,
+        .sprites = &.{
+            .{
+                .image_key = "shape_host",
+                .frames = &.{
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                            .first_shape_type = @intFromEnum(ShapeType.rect),
+                            .shape_count = 1,
+                        }),
+                        .shapes = &.{
+                            .{
+                                .shape_type = .rect,
+                                .rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                            },
+                        },
+                    },
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 1, .y = 2, .width = 10, .height = 10 },
+                            .first_shape_type = @intFromEnum(ShapeType.keep),
+                            .shape_count = 1,
+                        }),
+                        .shapes = &.{
+                            .{ .shape_type = .keep },
+                        },
+                    },
+                },
+            },
+        },
+    });
+    defer movie.deinit(allocator);
+
+    const frame_zero_items = movie.renderItems(0).?;
+    try std.testing.expectEqual(@as(usize, 1), frame_zero_items.len);
+    try std.testing.expectEqual(@as(u32, 0), frame_zero_items[0].shape_frame_index);
+    try std.testing.expectEqual(@as(u8, 1), frame_zero_items[0].has_shapes);
+
+    const keep_items = movie.renderItems(1).?;
+    try std.testing.expectEqual(@as(usize, 1), keep_items.len);
+    try std.testing.expectEqual(@as(u32, 1), keep_items[0].frame_index);
+    try std.testing.expectEqual(@as(u32, 0), keep_items[0].shape_frame_index);
+    try std.testing.expectEqual(@as(u8, 1), keep_items[0].has_shapes);
 }
 
 test "movie metadata accepts positive fps outside documented player values" {

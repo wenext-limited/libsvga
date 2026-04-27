@@ -96,6 +96,19 @@ typedef struct svga_render_command_info {
     svga_transform_t transform;
 } svga_render_command_info_t;
 
+typedef struct svga_render_item_info {
+    uint32_t sprite_index;
+    uint32_t frame_index;
+    uint32_t shape_frame_index;
+    float opacity;
+    svga_rect_t bounds;
+    svga_transform_t transform;
+    uint8_t is_matte;
+    uint8_t has_matte;
+    uint8_t has_clip_path;
+    uint8_t has_shapes;
+} svga_render_item_info_t;
+
 enum {
     SVGA_ASSET_UNKNOWN = 0,
     SVGA_ASSET_IMAGE_BYTES = 1,
@@ -213,6 +226,12 @@ svga_status_t svga_movie_get_render_commands(
     const svga_movie_t *movie,
     uint32_t frame_index,
     const svga_render_command_info_t **out_commands,
+    uint32_t *out_count
+);
+svga_status_t svga_movie_get_render_items(
+    const svga_movie_t *movie,
+    uint32_t frame_index,
+    const svga_render_item_info_t **out_items,
     uint32_t *out_count
 );
 

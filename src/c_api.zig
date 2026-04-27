@@ -80,6 +80,7 @@ pub const FrameInfo = extern struct {
 };
 
 pub const RenderCommandInfo = model.RenderCommand;
+pub const RenderItemInfo = model.RenderItem;
 
 pub const AssetInfo = extern struct {
     key_utf8: ?[*:0]const u8,
@@ -394,6 +395,27 @@ export fn svga_movie_get_render_commands(
     return statusCode(.ok);
 }
 
+export fn svga_movie_get_render_items(
+    movie_handle: ?*const MovieHandle,
+    frame_index: u32,
+    out_items: ?*?[*]const RenderItemInfo,
+    out_count: ?*u32,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const items_out = out_items orelse return statusCode(.null_argument);
+    const count_out = out_count orelse return statusCode(.null_argument);
+
+    items_out.* = null;
+    count_out.* = 0;
+
+    const items = movieFromConstHandle(handle).renderItems(frame_index) orelse return statusCode(.invalid_argument);
+    count_out.* = @intCast(items.len);
+    if (items.len > 0) {
+        items_out.* = items.ptr;
+    }
+    return statusCode(.ok);
+}
+
 export fn svga_movie_parse(bytes: ?[*]const u8, byte_count: usize, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
     const out = out_movie orelse return statusCode(.null_argument);
     out.* = null;
@@ -562,6 +584,12 @@ test "C API exposes parsed assets, audio, and shapes" {
     try std.testing.expectEqual(statusCode(.ok), svga_movie_get_shape_info(out_movie, 0, 0, 0, &shape_info));
     try std.testing.expectEqual(@as(i32, @intFromEnum(model.ShapeType.rect)), shape_info.shape_type);
     try std.testing.expectEqual(@as(f32, 10), shape_info.rect.x);
+
+    var render_items: ?[*]const RenderItemInfo = null;
+    var render_item_count: u32 = 0;
+    try std.testing.expectEqual(statusCode(.ok), svga_movie_get_render_items(out_movie, 0, &render_items, &render_item_count));
+    try std.testing.expectEqual(@as(u32, 0), render_item_count);
+    try std.testing.expect(render_items == null);
 }
 
 fn storedZip(test_allocator: std.mem.Allocator, name: []const u8, data: []const u8) ![]u8 {
