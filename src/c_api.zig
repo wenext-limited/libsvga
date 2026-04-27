@@ -78,6 +78,8 @@ pub const FrameInfo = extern struct {
     clip_path_utf8: ?[*:0]const u8,
 };
 
+pub const RenderCommandInfo = model.RenderCommand;
+
 pub const AssetInfo = extern struct {
     key_utf8: ?[*:0]const u8,
     kind: i32,
@@ -367,6 +369,27 @@ export fn svga_movie_get_shape_info(
         .has_styles = if (shape.has_styles) 1 else 0,
         .has_transform = if (shape.has_transform) 1 else 0,
     };
+    return statusCode(.ok);
+}
+
+export fn svga_movie_get_render_commands(
+    movie_handle: ?*const MovieHandle,
+    frame_index: u32,
+    out_commands: ?*?[*]const RenderCommandInfo,
+    out_count: ?*u32,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const commands_out = out_commands orelse return statusCode(.null_argument);
+    const count_out = out_count orelse return statusCode(.null_argument);
+
+    commands_out.* = null;
+    count_out.* = 0;
+
+    const commands = movieFromConstHandle(handle).renderCommands(frame_index) orelse return statusCode(.invalid_argument);
+    count_out.* = @intCast(commands.len);
+    if (commands.len > 0) {
+        commands_out.* = commands.ptr;
+    }
     return statusCode(.ok);
 }
 

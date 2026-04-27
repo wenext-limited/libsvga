@@ -88,6 +88,13 @@ typedef struct svga_frame_info {
     const char *clip_path_utf8;
 } svga_frame_info_t;
 
+typedef struct svga_render_command_info {
+    uint32_t sprite_index;
+    float opacity;
+    svga_rect_t bounds;
+    svga_transform_t transform;
+} svga_render_command_info_t;
+
 enum {
     SVGA_ASSET_UNKNOWN = 0,
     SVGA_ASSET_IMAGE_BYTES = 1,
@@ -200,6 +207,12 @@ svga_status_t svga_movie_get_shape_info(
     uint32_t frame_index,
     uint32_t shape_index,
     svga_shape_info_t *out_info
+);
+svga_status_t svga_movie_get_render_commands(
+    const svga_movie_t *movie,
+    uint32_t frame_index,
+    const svga_render_command_info_t **out_commands,
+    uint32_t *out_count
 );
 
 svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_movie_t **out_movie);

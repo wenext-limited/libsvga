@@ -157,6 +157,28 @@ pub const FrameInfo = struct {
     clip_path: [:0]const u8,
 };
 
+pub const RenderCommand = extern struct {
+    sprite_index: u32 = 0,
+    opacity: f32 = 0,
+    bounds: Layout = .{},
+    transform: Transform = .{},
+};
+
+const RenderCommandRange = struct {
+    start: usize = 0,
+    count: usize = 0,
+};
+
+const RenderData = struct {
+    commands: []RenderCommand,
+    ranges: []RenderCommandRange,
+
+    fn deinit(self: RenderData, allocator: std.mem.Allocator) void {
+        allocator.free(self.commands);
+        allocator.free(self.ranges);
+    }
+};
+
 pub const ValidationError = error{
     InvalidVersion,
     InvalidDimensions,
@@ -179,6 +201,8 @@ pub const Movie = struct {
     assets: []Asset,
     sprites: []Sprite,
     audios: []Audio,
+    render_commands: []RenderCommand,
+    render_frame_ranges: []RenderCommandRange,
 
     pub fn init(allocator: std.mem.Allocator, spec: MovieSpec) !Movie {
         try validateSpec(spec);
@@ -222,6 +246,9 @@ pub const Movie = struct {
             initialized_audios += 1;
         }
 
+        const render_data = try buildRenderData(allocator, sprites, spec.frames);
+        errdefer render_data.deinit(allocator);
+
         return .{
             .version = try allocator.dupeZ(u8, spec.version),
             .view_box_width = spec.view_box_width,
@@ -234,10 +261,14 @@ pub const Movie = struct {
             .assets = assets,
             .sprites = sprites,
             .audios = audios,
+            .render_commands = render_data.commands,
+            .render_frame_ranges = render_data.ranges,
         };
     }
 
     pub fn deinit(self: *Movie, allocator: std.mem.Allocator) void {
+        allocator.free(self.render_commands);
+        allocator.free(self.render_frame_ranges);
         for (self.assets) |*asset| {
             asset.deinit(allocator);
         }
@@ -288,6 +319,12 @@ pub const Movie = struct {
             .frame = frame.frame,
             .clip_path = frame.clip_path,
         };
+    }
+
+    pub fn renderCommands(self: *const Movie, frame_index: usize) ?[]const RenderCommand {
+        if (frame_index >= self.render_frame_ranges.len) return null;
+        const range = self.render_frame_ranges[frame_index];
+        return self.render_commands[range.start .. range.start + range.count];
     }
 };
 
@@ -446,6 +483,66 @@ pub const Shape = struct {
     }
 };
 
+fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_count_value: i32) !RenderData {
+    const frame_count: usize = @intCast(frame_count_value);
+    var command_counts = try allocator.alloc(usize, frame_count);
+    defer allocator.free(command_counts);
+    @memset(command_counts, 0);
+
+    for (sprites, 0..) |sprite, sprite_index| {
+        for (sprite.frames[0..@min(frame_count, sprite.frames.len)], 0..) |owned_frame, frame_index| {
+            if (renderCommandForFrame(sprite_index, owned_frame.frame) != null) {
+                command_counts[frame_index] += 1;
+            }
+        }
+    }
+
+    var ranges = try allocator.alloc(RenderCommandRange, frame_count);
+    errdefer allocator.free(ranges);
+
+    var command_total: usize = 0;
+    for (command_counts, 0..) |count, frame_index| {
+        ranges[frame_index] = .{
+            .start = command_total,
+            .count = count,
+        };
+        command_total += count;
+    }
+
+    var commands = try allocator.alloc(RenderCommand, command_total);
+    errdefer allocator.free(commands);
+
+    for (ranges, 0..) |range, frame_index| {
+        command_counts[frame_index] = range.start;
+    }
+
+    for (sprites, 0..) |sprite, sprite_index| {
+        for (sprite.frames[0..@min(frame_count, sprite.frames.len)], 0..) |owned_frame, frame_index| {
+            const command = renderCommandForFrame(sprite_index, owned_frame.frame) orelse continue;
+            const command_index = command_counts[frame_index];
+            commands[command_index] = command;
+            command_counts[frame_index] += 1;
+        }
+    }
+
+    return .{
+        .commands = commands,
+        .ranges = ranges,
+    };
+}
+
+fn renderCommandForFrame(sprite_index: usize, frame: Frame) ?RenderCommand {
+    if (frame.visible == 0 or frame.alpha <= 0) return null;
+    if (frame.layout.width <= 0 or frame.layout.height <= 0) return null;
+
+    return .{
+        .sprite_index = @intCast(sprite_index),
+        .opacity = frame.alpha,
+        .bounds = frame.layout,
+        .transform = frame.transform,
+    };
+}
+
 pub fn validateSpec(spec: MovieSpec) ValidationError!void {
     if (spec.version.len > max_version_bytes) return error.InvalidVersion;
     if (std.mem.indexOfScalar(u8, spec.version, 0) != null) return error.InvalidVersion;
@@ -522,6 +619,13 @@ test "movie metadata can be validated and owned" {
     try std.testing.expectEqual(@as(f32, 1), frame_info.frame.alpha);
     try std.testing.expectEqual(@as(f32, 10), frame_info.frame.nx);
     try std.testing.expectEqual(@as(f32, 20), frame_info.frame.ny);
+
+    const commands = movie.renderCommands(0).?;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(@as(u32, 0), commands[0].sprite_index);
+    try std.testing.expectEqual(@as(f32, 1), commands[0].opacity);
+    try std.testing.expectEqual(@as(f32, 10), commands[0].bounds.x);
+    try std.testing.expectEqual(@as(f32, 30), commands[0].bounds.width);
 }
 
 test "movie metadata accepts positive fps outside documented player values" {
