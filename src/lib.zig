@@ -1,3 +1,8 @@
+//! Public Zig API for libsvga.
+//!
+//! Most mobile integrations use the C ABI in include/svga.h. This module keeps
+//! the native Zig entry points available for tools, tests, and future wrappers.
+
 const std = @import("std");
 
 pub const model = @import("model.zig");

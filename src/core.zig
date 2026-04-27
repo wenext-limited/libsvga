@@ -4,10 +4,17 @@ const parser = @import("parser.zig");
 
 pub const default_max_input_bytes: usize = 256 * 1024 * 1024;
 
+/// Filesystem parser limits. The default is intentionally high enough for
+/// production SVGA files while still preventing accidental unbounded reads.
 pub const ParseFileOptions = struct {
     max_input_bytes: usize = default_max_input_bytes,
 };
 
+/// Parse SVGA bytes into an owned, immutable Movie.
+///
+/// The returned pointer must be released with destroyMovie() using the same
+/// allocator. Supported inputs are ZIP SVGA packages and zlib-compressed
+/// movie.binary payloads.
 pub fn parseMovie(allocator: std.mem.Allocator, bytes: []const u8) !*model.Movie {
     var parsed = try parser.parseMovieMetadata(allocator, bytes);
     defer parsed.deinit(allocator);
@@ -19,6 +26,7 @@ pub fn parseMovie(allocator: std.mem.Allocator, bytes: []const u8) !*model.Movie
     return movie;
 }
 
+/// Read a file from the current working directory and parse it as SVGA bytes.
 pub fn parseMovieFile(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -30,6 +38,8 @@ pub fn parseMovieFile(
     return parseMovie(allocator, input);
 }
 
+/// Destroy a Movie allocated by parseMovie(), parseMovieFile(), or callers that
+/// directly allocate and initialize model.Movie.
 pub fn destroyMovie(allocator: std.mem.Allocator, movie: *model.Movie) void {
     movie.deinit(allocator);
     allocator.destroy(movie);

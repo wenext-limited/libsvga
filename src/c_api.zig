@@ -5,6 +5,7 @@ const model = @import("model.zig");
 
 pub const abi_version: u32 = 1;
 
+/// ABI status values. Keep these in sync with include/svga.h.
 pub const Status = enum(i32) {
     ok = 0,
     null_argument = 1,
@@ -17,10 +18,17 @@ pub const Status = enum(i32) {
 };
 
 const MovieHandle = opaque {};
+
+// The C ABI stores one allocator choice in the library. page_allocator avoids
+// thread-local allocator assumptions on single-threaded and WASM targets.
 const allocator = if (builtin.single_threaded or builtin.target.cpu.arch.isWasm())
     std.heap.page_allocator
 else
     std.heap.smp_allocator;
+
+// Freestanding and Emscripten builds are intended to receive bytes from their
+// host runtime. The parse_file API reports unsupported instead of pulling in a
+// filesystem contract those targets cannot satisfy.
 const has_filesystem = switch (builtin.target.os.tag) {
     .freestanding, .emscripten => false,
     else => true,

@@ -6,6 +6,7 @@ const zlib = if (build_options.use_system_zlib) @cImport({
     @cInclude("zlib.h");
 }) else struct {};
 
+/// Errors emitted while converting an SVGA container into a MovieSpec.
 pub const ParseError = error{
     UnsupportedContainer,
     UnsupportedZip,
@@ -38,6 +39,7 @@ const MovieParams = struct {
 };
 
 pub const MovieMetadata = struct {
+    /// Borrowed by callers through spec. The arena owns the strings and slices.
     spec: model.MovieSpec,
     arena: std.heap.ArenaAllocator,
 
@@ -48,6 +50,15 @@ pub const MovieMetadata = struct {
     }
 };
 
+/// Parse an SVGA container and return a MovieSpec plus its backing arena.
+///
+/// SVGA commonly appears in two forms:
+///
+/// - ZIP package containing movie.binary or legacy movie.spec.
+/// - zlib-compressed movie.binary payload.
+///
+/// The returned spec borrows memory from MovieMetadata.arena, so callers should
+/// construct their owned model before calling MovieMetadata.deinit().
 pub fn parseMovieMetadata(allocator: std.mem.Allocator, bytes: []const u8) ParseError!MovieMetadata {
     if (bytes.len < 2) return error.InvalidData;
 
@@ -75,6 +86,10 @@ pub fn isZip(bytes: []const u8) bool {
     return bytes.len >= 2 and bytes[0] == 'P' and bytes[1] == 'K';
 }
 
+/// Validate the two-byte zlib header before calling a backend inflater.
+///
+/// This keeps obviously non-SVGA bytes out of platform zlib implementations and
+/// makes invalid inputs fail consistently across macOS, Linux, Android, and WASM.
 fn isZlibStream(bytes: []const u8) bool {
     if (bytes.len < 2) return false;
     const cmf = bytes[0];
@@ -89,6 +104,7 @@ fn isZlibStream(bytes: []const u8) bool {
         header % 31 == 0;
 }
 
+/// Parse the protobuf-like movie.binary payload into a borrowed MovieSpec.
 pub fn parseMovieProto(allocator: std.mem.Allocator, bytes: []const u8) ParseError!model.MovieSpec {
     var reader = ProtoReader{ .bytes = bytes };
     var version: []const u8 = "";
@@ -475,6 +491,10 @@ const ZipEntry = struct {
     data: []const u8,
 };
 
+/// Parse the small subset of ZIP needed by SVGA packages.
+///
+/// Normal packages have a central directory. Some fixtures or hand-built files
+/// only contain local headers, so the parser keeps a local-header fallback.
 fn parseZipEntries(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]ZipEntry {
     if (findEndOfCentralDirectory(bytes)) |eocd| {
         return parseCentralDirectoryEntries(allocator, bytes, eocd);
@@ -646,6 +666,7 @@ fn normalizedZipName(name: []const u8) []const u8 {
     return result;
 }
 
+/// Inflate raw deflate streams stored inside ZIP file entries.
 fn inflateRawDeflate(allocator: std.mem.Allocator, bytes: []const u8, expected_size: u32) ParseError![]u8 {
     if (!comptime build_options.use_system_zlib) {
         return inflateWithStdFlate(
@@ -1020,6 +1041,10 @@ fn isMp3Data(bytes: []const u8) bool {
     return std.mem.startsWith(u8, bytes, "ID3");
 }
 
+/// Inflate a standalone zlib stream.
+///
+/// Targets without a reliable system libz use Zig's std.compress.flate backend,
+/// which is what makes Android and WASM release artifacts self-contained.
 fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]u8 {
     if (!comptime build_options.use_system_zlib) {
         return inflateWithStdFlate(

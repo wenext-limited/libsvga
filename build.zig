@@ -39,6 +39,9 @@ pub fn build(b: *std.Build) void {
         "Minimum iOS version used by the package-release Apple archive",
     ) orelse "15.0";
 
+    // Make the zlib backend choice visible to parser.zig at comptime. Android
+    // and WASM default to Zig's portable inflater so release artifacts do not
+    // depend on a target libz.
     const options = b.addOptions();
     options.addOption(bool, "use_system_zlib", use_system_zlib);
 
@@ -70,6 +73,8 @@ pub fn build(b: *std.Build) void {
     const install_lib = b.addInstallArtifact(lib, .{});
     b.getInstallStep().dependOn(&install_lib.step);
     if (isDarwin(target.result.os.tag)) {
+        // Zig may produce a thin archive with nested archive members on Darwin.
+        // Re-archiving keeps the static library friendly to Xcode and SwiftPM.
         const rearchive = b.addSystemCommand(&.{"sh"});
         rearchive.addFileArg(b.path("tools/rearchive_macos.sh"));
         rearchive.addArg(b.getInstallPath(.lib, "libsvga.a"));
@@ -139,6 +144,8 @@ const PortablePackage = struct {
     target: []const u8,
 };
 
+// Non-Apple release packages are plain static-library bundles:
+// include/svga.h, include/module.modulemap, lib/libsvga.a, and LICENSE.
 const portable_packages = [_]PortablePackage{
     .{ .name = "android-aarch64", .target = "aarch64-linux-android" },
     .{ .name = "android-armv7", .target = "arm-linux-androideabi" },
@@ -149,6 +156,10 @@ const portable_packages = [_]PortablePackage{
     .{ .name = "wasm32-emscripten", .target = "wasm32-emscripten" },
 };
 
+/// Wire the `zig build package-release` step.
+///
+/// The step intentionally builds each target through a nested `zig build`
+/// invocation so the normal install layout remains the single source of truth.
 fn addReleasePackages(
     b: *std.Build,
     optimize: std.builtin.OptimizeMode,
@@ -184,6 +195,7 @@ fn addReleasePackages(
     }
 }
 
+/// Add a static-library tarball for one portable target.
 fn addPortablePackage(
     b: *std.Build,
     package_step: *std.Build.Step,
@@ -249,6 +261,10 @@ fn addPortablePackage(
     package_step.dependOn(&tar_package.step);
 }
 
+/// Add an XCFramework tarball for Apple consumers.
+///
+/// The slices are still built by Zig. xcodebuild is only used for the final
+/// XCFramework directory layout that Apple tools expect.
 fn addApplePackage(
     b: *std.Build,
     package_step: *std.Build.Step,
@@ -325,6 +341,7 @@ fn addApplePackage(
     package_step.dependOn(&tar_package.step);
 }
 
+/// Build one Apple slice and add the modulemap next to the installed header.
 fn addAppleSlice(
     b: *std.Build,
     parent_step: *std.Build.Step,
@@ -357,6 +374,8 @@ fn addAppleSlice(
     return &copy_modulemap.step;
 }
 
+/// System commands used for packaging write files outside Zig's cache, so mark
+/// them as side effects to force execution when the package step is requested.
 fn sideEffectCommand(b: *std.Build, argv: []const []const u8) *std.Build.Step.Run {
     const run = b.addSystemCommand(argv);
     run.setCwd(b.path("."));

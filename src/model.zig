@@ -3,6 +3,8 @@ const svg_path = @import("svg_path.zig");
 
 pub const max_version_bytes = 255;
 
+/// Borrowed movie description produced by the parser before ownership is moved
+/// into Movie. Slices in this struct are valid as long as the parser arena lives.
 pub const MovieSpec = struct {
     version: []const u8 = "",
     view_box_width: f32,
@@ -17,6 +19,7 @@ pub const MovieSpec = struct {
     audios: []const AudioSpec = &.{},
 };
 
+/// Stable high-level metadata exposed by both Zig and C APIs.
 pub const MovieInfo = struct {
     version: [:0]const u8,
     view_box_width: f32,
@@ -233,6 +236,8 @@ pub const ShapeRecord = extern struct {
 };
 
 pub const MetadataTables = struct {
+    // Flat tables keep the C ABI cheap: wrappers can pass borrowed pointers to
+    // renderers without allocating per sprite or per frame.
     sprite_records: []SpriteRecord,
     frame_records: []FrameRecord,
     sprite_frame_ranges: []RenderRange,
@@ -281,6 +286,7 @@ pub const ValidationError = error{
 };
 
 pub const Movie = struct {
+    /// Owned, NUL-terminated version string for direct C ABI borrowing.
     version: [:0]u8,
     view_box_width: f32,
     view_box_height: f32,
@@ -299,6 +305,11 @@ pub const Movie = struct {
     render_item_frame_ranges: []RenderRange,
     visual_frame_indices: []u32,
 
+    /// Validate and copy a parser MovieSpec into an owned immutable Movie.
+    ///
+    /// The parser uses arenas for speed; Movie.init performs the ownership
+    /// boundary, building stable NUL-terminated strings and flattened render
+    /// tables for C/Swift/Android/Web callers.
     pub fn init(allocator: std.mem.Allocator, spec: MovieSpec) !Movie {
         try validateSpec(spec);
 
@@ -374,6 +385,7 @@ pub const Movie = struct {
         };
     }
 
+    /// Release all owned tables, strings, assets, sprites, and audio metadata.
     pub fn deinit(self: *Movie, allocator: std.mem.Allocator) void {
         self.metadata.deinit(allocator);
         allocator.free(self.render_commands);
@@ -397,6 +409,7 @@ pub const Movie = struct {
         self.* = undefined;
     }
 
+    /// Return the compact metadata view used by the public API.
     pub fn info(self: *const Movie) MovieInfo {
         return .{
             .version = self.version,
@@ -410,6 +423,7 @@ pub const Movie = struct {
         };
     }
 
+    /// Return sprite metadata for an index, or null when out of range.
     pub fn spriteInfo(self: *const Movie, index: usize) ?SpriteInfo {
         if (index >= self.sprites.len) return null;
         const sprite = &self.sprites[index];
@@ -422,6 +436,7 @@ pub const Movie = struct {
         };
     }
 
+    /// Return frame metadata for a sprite/frame pair, or null when out of range.
     pub fn frameInfo(self: *const Movie, sprite_index: usize, frame_index: usize) ?FrameInfo {
         if (sprite_index >= self.sprites.len) return null;
         const sprite = &self.sprites[sprite_index];
@@ -433,23 +448,27 @@ pub const Movie = struct {
         };
     }
 
+    /// Return bitmap render commands for one timeline frame.
     pub fn renderCommands(self: *const Movie, frame_index: usize) ?[]const RenderCommand {
         if (frame_index >= self.render_frame_ranges.len) return null;
         const range = self.render_frame_ranges[frame_index];
         return self.render_commands[range.start .. range.start + range.count];
     }
 
+    /// Return rich render items for one timeline frame.
     pub fn renderItems(self: *const Movie, frame_index: usize) ?[]const RenderItem {
         if (frame_index >= self.render_item_frame_ranges.len) return null;
         const range = self.render_item_frame_ranges[frame_index];
         return self.render_items[range.start .. range.start + range.count];
     }
 
+    /// Map a timeline frame to the latest frame that has visual content.
     pub fn visualFrameIndex(self: *const Movie, frame_index: usize) ?u32 {
         if (frame_index >= self.visual_frame_indices.len) return null;
         return self.visual_frame_indices[frame_index];
     }
 
+    /// Find an asset by exact key.
     pub fn assetByKey(self: *const Movie, key: []const u8) ?*const Asset {
         for (self.assets) |*asset| {
             if (std.mem.eql(u8, asset.key, key)) return asset;
@@ -457,11 +476,14 @@ pub const Movie = struct {
         return null;
     }
 
+    /// Resolve a sprite image key to actual image bytes when the SVGA package
+    /// stores filename indirections instead of direct bytes.
     pub fn resolveImageAsset(self: *const Movie, image_key: []const u8) ?*const Asset {
         const asset = self.assetByKey(image_key) orelse return null;
         return self.resolveFilenameAsset(asset) orelse asset;
     }
 
+    /// Resolve an audio key, following filename indirections when present.
     pub fn resolveAudioAsset(self: *const Movie, audio_key: []const u8) ?*const Asset {
         const asset = self.assetByKey(audio_key) orelse return null;
         if (asset.kind != .filename) return asset;
