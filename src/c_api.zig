@@ -941,6 +941,10 @@ export fn svga_clamp_frame_range(
     out_range: ?*FrameRange,
 ) callconv(.c) i32 {
     const range_out = out_range orelse return statusCode(.null_argument);
+    range_out.* = .{ .lower_bound = 0, .upper_bound = 0 };
+    if (!isOrderedRange(range) or !isValidFrameRange(valid_range)) {
+        return statusCode(.invalid_argument);
+    }
     range_out.* = clampFrameRange(range, valid_range);
     return statusCode(.ok);
 }
@@ -952,6 +956,10 @@ export fn svga_frame_offset_for_frame(
     out_offset: ?*i64,
 ) callconv(.c) i32 {
     const offset_out = out_offset orelse return statusCode(.null_argument);
+    offset_out.* = 0;
+    if (!rangeContainsFrame(range, frame_index)) {
+        return statusCode(.invalid_argument);
+    }
     offset_out.* = frameOffsetForFrame(frame_index, range, reverse != 0);
     return statusCode(.ok);
 }
@@ -963,6 +971,11 @@ export fn svga_frame_index_for_offset(
     out_frame_index: ?*i32,
 ) callconv(.c) i32 {
     const frame_index_out = out_frame_index orelse return statusCode(.null_argument);
+    frame_index_out.* = 0;
+    const count = frameRangeCount(range);
+    if (!isValidNonEmptyFrameRange(range) or offset < 0 or offset >= count) {
+        return statusCode(.invalid_argument);
+    }
     frame_index_out.* = frameIndexForOffset(offset, range, reverse != 0);
     return statusCode(.ok);
 }
@@ -974,7 +987,11 @@ export fn svga_finished_frame_index(
     out_frame_index: ?*i32,
 ) callconv(.c) i32 {
     const frame_index_out = out_frame_index orelse return statusCode(.null_argument);
+    frame_index_out.* = 0;
     const mode = fillModeFromCode(fill_mode) orelse return statusCode(.invalid_argument);
+    if (!isValidNonEmptyFrameRange(range)) {
+        return statusCode(.invalid_argument);
+    }
     frame_index_out.* = finishedFrameIndex(range, reverse != 0, mode);
     return statusCode(.ok);
 }
@@ -1037,7 +1054,11 @@ export fn svga_make_movie_layout(
     out_layout: ?*MovieLayout,
 ) callconv(.c) i32 {
     const layout_out = out_layout orelse return statusCode(.null_argument);
+    layout_out.* = zeroMovieLayout();
     const mode = contentModeFromCode(content_mode) orelse return statusCode(.invalid_argument);
+    if (!isPositiveFiniteSize(movie_size) or !isPositiveFiniteSize(viewport_size)) {
+        return statusCode(.invalid_argument);
+    }
     layout_out.* = movieLayout(movie_size, viewport_size, mode);
     return statusCode(.ok);
 }
@@ -1048,6 +1069,10 @@ export fn svga_aspect_fit_rect(
     out_rect: ?*Rect2D,
 ) callconv(.c) i32 {
     const rect_out = out_rect orelse return statusCode(.null_argument);
+    rect_out.* = zeroRect2D();
+    if (!isPositiveFiniteSize(content_size) or !isFiniteRectWithPositiveSize(bounds)) {
+        return statusCode(.invalid_argument);
+    }
     rect_out.* = aspectFitRect(content_size, bounds);
     return statusCode(.ok);
 }
@@ -1205,24 +1230,39 @@ fn frameRangeCount(range: FrameRange) i64 {
     return @max(@as(i64, range.upper_bound) - @as(i64, range.lower_bound), 0);
 }
 
+fn isOrderedRange(range: FrameRange) bool {
+    return range.lower_bound <= range.upper_bound;
+}
+
+fn isValidFrameRange(range: FrameRange) bool {
+    return range.lower_bound >= 0 and isOrderedRange(range);
+}
+
+fn isValidNonEmptyFrameRange(range: FrameRange) bool {
+    return isValidFrameRange(range) and frameRangeCount(range) > 0;
+}
+
 fn rangeWithinFrameCount(range: FrameRange, frame_count: i32) bool {
     return range.lower_bound >= 0 and
         range.upper_bound <= frame_count and
         frameRangeCount(range) > 0;
 }
 
+fn rangeContainsFrame(range: FrameRange, frame_index: i32) bool {
+    return isValidNonEmptyFrameRange(range) and
+        frame_index >= range.lower_bound and
+        frame_index < range.upper_bound;
+}
+
 fn clampFrameRange(range: FrameRange, valid_range: FrameRange) FrameRange {
-    const valid_count = frameRangeCount(valid_range);
-    if (valid_count <= 0) return .{ .lower_bound = 0, .upper_bound = 0 };
-
-    const lower = @max(range.lower_bound, valid_range.lower_bound);
-    const upper = @min(range.upper_bound, valid_range.upper_bound);
-    if (lower < upper) return .{ .lower_bound = lower, .upper_bound = upper };
-
     return .{
-        .lower_bound = valid_range.lower_bound,
-        .upper_bound = valid_range.lower_bound,
+        .lower_bound = clampI32(range.lower_bound, valid_range.lower_bound, valid_range.upper_bound),
+        .upper_bound = clampI32(range.upper_bound, valid_range.lower_bound, valid_range.upper_bound),
     };
+}
+
+fn clampI32(value: i32, lower_bound: i32, upper_bound: i32) i32 {
+    return @min(@max(value, lower_bound), upper_bound);
 }
 
 fn frameOffsetForFrame(frame_index: i32, range: FrameRange, reverse: bool) i64 {
@@ -1317,8 +1357,6 @@ fn movieLayout(movie_size: Size2D, viewport_size: Size2D, content_mode: ContentM
 }
 
 fn aspectFitRect(content_size: Size2D, bounds: Rect2D) Rect2D {
-    if (!(content_size.width > 0) or !(content_size.height > 0)) return bounds;
-
     const scale = @min(bounds.width / content_size.width, bounds.height / content_size.height);
     const width = content_size.width * scale;
     const height = content_size.height * scale;
@@ -1327,6 +1365,39 @@ fn aspectFitRect(content_size: Size2D, bounds: Rect2D) Rect2D {
         .y = bounds.y + bounds.height / 2 - height / 2,
         .width = width,
         .height = height,
+    };
+}
+
+fn isPositiveFiniteSize(size: Size2D) bool {
+    return std.math.isFinite(size.width) and
+        std.math.isFinite(size.height) and
+        size.width > 0 and
+        size.height > 0;
+}
+
+fn isFiniteRectWithPositiveSize(rect: Rect2D) bool {
+    return std.math.isFinite(rect.x) and
+        std.math.isFinite(rect.y) and
+        std.math.isFinite(rect.width) and
+        std.math.isFinite(rect.height) and
+        rect.width > 0 and
+        rect.height > 0;
+}
+
+fn zeroMovieLayout() MovieLayout {
+    return .{
+        .scale_x = 0,
+        .scale_y = 0,
+        .origin = .{ .x = 0, .y = 0 },
+    };
+}
+
+fn zeroRect2D() Rect2D {
+    return .{
+        .x = 0,
+        .y = 0,
+        .width = 0,
+        .height = 0,
     };
 }
 
@@ -1645,6 +1716,17 @@ test "C API exposes timeline scalar helpers" {
     try std.testing.expectEqual(@as(i32, 2), clamped_range.lower_bound);
     try std.testing.expectEqual(@as(i32, 8), clamped_range.upper_bound);
 
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_clamp_frame_range(
+            .{ .lower_bound = 20, .upper_bound = 25 },
+            .{ .lower_bound = 2, .upper_bound = 10 },
+            &clamped_range,
+        ),
+    );
+    try std.testing.expectEqual(@as(i32, 10), clamped_range.lower_bound);
+    try std.testing.expectEqual(@as(i32, 10), clamped_range.upper_bound);
+
     var offset: i64 = -1;
     try std.testing.expectEqual(
         statusCode(.ok),
@@ -1657,6 +1739,73 @@ test "C API exposes timeline scalar helpers" {
         svga_frame_index_for_offset(2, .{ .lower_bound = 4, .upper_bound = 10 }, 1, &frame_index),
     );
     try std.testing.expectEqual(@as(i32, 7), frame_index);
+}
+
+test "C API rejects invalid scalar helper arguments and resets outputs" {
+    var range: FrameRange = .{ .lower_bound = 123, .upper_bound = 456 };
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_clamp_frame_range(
+            .{ .lower_bound = 5, .upper_bound = 1 },
+            .{ .lower_bound = 0, .upper_bound = 10 },
+            &range,
+        ),
+    );
+    try std.testing.expectEqual(@as(i32, 0), range.lower_bound);
+    try std.testing.expectEqual(@as(i32, 0), range.upper_bound);
+
+    var offset: i64 = 99;
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_frame_offset_for_frame(10, .{ .lower_bound = 4, .upper_bound = 10 }, 0, &offset),
+    );
+    try std.testing.expectEqual(@as(i64, 0), offset);
+
+    var frame_index: i32 = 99;
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_frame_index_for_offset(6, .{ .lower_bound = 4, .upper_bound = 10 }, 0, &frame_index),
+    );
+    try std.testing.expectEqual(@as(i32, 0), frame_index);
+
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_finished_frame_index(.{ .lower_bound = 4, .upper_bound = 4 }, 0, @intFromEnum(FillMode.current), &frame_index),
+    );
+    try std.testing.expectEqual(@as(i32, 0), frame_index);
+
+    var layout: MovieLayout = .{
+        .scale_x = 3,
+        .scale_y = 4,
+        .origin = .{ .x = 5, .y = 6 },
+    };
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_make_movie_layout(
+            .{ .width = 0, .height = 50 },
+            .{ .width = 300, .height = 300 },
+            @intFromEnum(ContentMode.fit),
+            &layout,
+        ),
+    );
+    try std.testing.expectEqual(@as(f64, 0), layout.scale_x);
+    try std.testing.expectEqual(@as(f64, 0), layout.scale_y);
+    try std.testing.expectEqual(@as(f64, 0), layout.origin.x);
+    try std.testing.expectEqual(@as(f64, 0), layout.origin.y);
+
+    var rect: Rect2D = .{ .x = 1, .y = 2, .width = 3, .height = 4 };
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_aspect_fit_rect(
+            .{ .width = 200, .height = 100 },
+            .{ .x = 0, .y = 0, .width = -1, .height = 50 },
+            &rect,
+        ),
+    );
+    try std.testing.expectEqual(@as(f64, 0), rect.x);
+    try std.testing.expectEqual(@as(f64, 0), rect.y);
+    try std.testing.expectEqual(@as(f64, 0), rect.width);
+    try std.testing.expectEqual(@as(f64, 0), rect.height);
 }
 
 test "C API computes playback position and layout geometry" {

@@ -905,8 +905,9 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
 }
 
 fn renderCommandForFrame(sprite_index: usize, frame: Frame) ?RenderCommand {
-    if (frame.visible == 0 or frame.alpha <= 0) return null;
-    if (frame.layout.width <= 0 or frame.layout.height <= 0) return null;
+    if (frame.visible == 0 or !std.math.isFinite(frame.alpha) or frame.alpha <= 0) return null;
+    if (!layoutIsFinite(frame.layout) or frame.layout.width <= 0 or frame.layout.height <= 0) return null;
+    if (!transformIsFinite(frame.transform)) return null;
 
     return .{
         .sprite_index = @intCast(sprite_index),
@@ -914,6 +915,22 @@ fn renderCommandForFrame(sprite_index: usize, frame: Frame) ?RenderCommand {
         .bounds = frame.layout,
         .transform = frame.transform,
     };
+}
+
+fn layoutIsFinite(layout: Layout) bool {
+    return std.math.isFinite(layout.x) and
+        std.math.isFinite(layout.y) and
+        std.math.isFinite(layout.width) and
+        std.math.isFinite(layout.height);
+}
+
+fn transformIsFinite(transform: Transform) bool {
+    return std.math.isFinite(transform.a) and
+        std.math.isFinite(transform.b) and
+        std.math.isFinite(transform.c) and
+        std.math.isFinite(transform.d) and
+        std.math.isFinite(transform.tx) and
+        std.math.isFinite(transform.ty);
 }
 
 fn renderItemForFrame(sprite: *const Sprite, sprite_index: usize, frame_index: usize, shape_frame_index: usize) ?RenderItem {
@@ -1190,6 +1207,52 @@ test "visual frame indices alias adjacent identical static frames" {
     try std.testing.expectEqual(@as(u32, 0), movie.visualFrameIndex(0).?);
     try std.testing.expectEqual(@as(u32, 0), movie.visualFrameIndex(1).?);
     try std.testing.expectEqual(@as(u32, 2), movie.visualFrameIndex(2).?);
+}
+
+test "render tables skip non-finite frame geometry" {
+    const allocator = std.testing.allocator;
+    var movie = try Movie.init(allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 3,
+        .sprite_count = 1,
+        .sprites = &.{
+            .{
+                .image_key = "image_0",
+                .frames = &.{
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                        }),
+                    },
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = std.math.nan(f32), .height = 10 },
+                        }),
+                    },
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                            .transform = .{ .a = std.math.inf(f32), .d = 1 },
+                        }),
+                    },
+                },
+            },
+        },
+    });
+    defer movie.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), movie.renderCommands(0).?.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.renderCommands(1).?.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.renderCommands(2).?.len);
+    try std.testing.expectEqual(@as(usize, 1), movie.renderItems(0).?.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.renderItems(1).?.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.renderItems(2).?.len);
 }
 
 test "movie owns parsed path commands for clips and path shapes" {
