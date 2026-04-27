@@ -1,0 +1,164 @@
+# libsvga
+
+`libsvga` is the Zig core for a new SVGA implementation. It owns platform-neutral
+SVGA parsing and timeline data, while platform packages such as Swift own UI,
+image decoding, animation clocks, audio, and rendering.
+
+The current milestone targets parser parity with SVGAPlayer-iOS for non-UI
+code. `libsvga` parses plain zlib/protobuf SVGA 2.x files, zip archives with
+`movie.binary`, and legacy zip archives with `movie.spec` JSON into normalized
+movie and timeline data:
+
+- SVGA version
+- view box width and height
+- FPS
+- frame count
+- image, sprite, asset, and audio counts
+- filename assets, embedded image bytes, embedded audio bytes, and zip payloads
+- sprite image/matte keys
+- audio timing records
+- frame alpha, layout, transform, clip path, and shape counts
+- full vector shape records: path, rect, ellipse, keep, styles, and transform
+- precomputed frame visibility and transformed `nx`/`ny` minima
+- first-shape `keep` markers for vector frame caching
+
+Bitmap decoding, audio playback, layer construction, and animation clocks remain
+platform/UI responsibilities.
+
+## Build
+
+Zig 0.15.2 is currently used.
+
+```sh
+ZIG_GLOBAL_CACHE_DIR=/tmp/zig-global-cache zig build test
+ZIG_GLOBAL_CACHE_DIR=/tmp/zig-global-cache zig build
+```
+
+The build produces:
+
+- `zig-out/lib/libsvga.a`
+- `zig-out/include/svga.h`
+- `zig-out/bin/svga_probe`
+
+`libsvga.a` currently uses zlib for SVGA inflate performance. Consumers that
+link the static library directly should also link `z`.
+
+On Darwin targets, `zig build` re-archives the installed static library with
+Apple `ar` so SwiftPM/Xcode's linker accepts `zig-out/lib/libsvga.a`.
+
+## Apple XCFramework
+
+The Swift package consumes `libsvga` as a local static XCFramework. Regenerate
+the macOS and iOS artifact with:
+
+```sh
+tools/build_apple_xcframework.sh
+```
+
+By default the script writes:
+
+- `../SVGAPlayerSwift/Binaries/libsvga-static.xcframework`
+
+The current artifact contains macOS `arm64`/`x86_64`, iOS device `arm64`, and
+iOS simulator `arm64`/`x86_64` slices. It is layered on top of the portable C
+ABI; Android and other consumers should keep using the raw Zig library/header
+outputs for their own platform packaging.
+
+## C ABI
+
+The public ABI is declared in `include/svga.h`.
+
+The core API uses opaque handles and explicit ownership:
+
+```c
+svga_status_t svga_movie_parse(
+    const uint8_t *bytes,
+    size_t byte_count,
+    svga_movie_t **out_movie
+);
+
+svga_status_t svga_movie_get_info(
+    const svga_movie_t *movie,
+    svga_movie_info_t *out_info
+);
+
+svga_status_t svga_movie_get_sprite_info(
+    const svga_movie_t *movie,
+    uint32_t sprite_index,
+    svga_sprite_info_t *out_info
+);
+
+svga_status_t svga_movie_get_frame_info(
+    const svga_movie_t *movie,
+    uint32_t sprite_index,
+    uint32_t frame_index,
+    svga_frame_info_t *out_info
+);
+
+svga_status_t svga_movie_get_asset_count(
+    const svga_movie_t *movie,
+    uint32_t *out_count
+);
+
+svga_status_t svga_movie_get_asset_info(
+    const svga_movie_t *movie,
+    uint32_t asset_index,
+    svga_asset_info_t *out_info
+);
+
+svga_status_t svga_movie_get_audio_info(
+    const svga_movie_t *movie,
+    uint32_t audio_index,
+    svga_audio_info_t *out_info
+);
+
+svga_status_t svga_movie_get_shape_info(
+    const svga_movie_t *movie,
+    uint32_t sprite_index,
+    uint32_t frame_index,
+    uint32_t shape_index,
+    svga_shape_info_t *out_info
+);
+
+void svga_movie_destroy(svga_movie_t *movie);
+```
+
+Strings and byte buffers returned through info structs are borrowed from the
+movie handle and remain valid until `svga_movie_destroy`.
+
+## Probe Tool
+
+`svga_probe` parses one or more `.svga` files and prints movie metadata.
+
+```sh
+zig-out/bin/svga_probe path/to/file.svga
+```
+
+The parser-parity fixture runs currently pass:
+
+- archived SVGAPlayer-iOS samples: `ok=10 failed=0`
+- private production `.svga` resources: `ok=175 failed=0`
+
+The standalone benchmark compares `libsvga` against the archived
+SVGAPlayer-iOS parser on private fixtures. A recent `ITERATIONS=3` run:
+
+- `zig/libsvga`: `754048.4 ns_per_parse`
+- `objc/SVGAPlayer-iOS`: `2463912.8 ns_per_parse`
+
+## Design Boundary
+
+`libsvga` should own:
+
+- container detection
+- zlib/zip decode
+- protobuf and legacy JSON parsing
+- normalized movie, sprite, frame, shape, audio, and asset records
+- scalar frame/timeline lookup helpers
+
+Platform layers should own:
+
+- network and filesystem cache policy
+- `UIImage`/`CGImage`/bitmap decode
+- `CALayer`, `CAShapeLayer`, SwiftUI, or Android rendering
+- audio playback
+- dynamic text/image/drawing replacement
