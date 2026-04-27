@@ -60,6 +60,7 @@ pub fn parseMovieMetadata(allocator: std.mem.Allocator, bytes: []const u8) Parse
             .arena = arena,
         };
     }
+    if (!isZlibStream(bytes)) return error.InvalidData;
 
     const inflated = try inflateZlib(allocator, bytes);
     defer allocator.free(inflated);
@@ -72,6 +73,20 @@ pub fn parseMovieMetadata(allocator: std.mem.Allocator, bytes: []const u8) Parse
 
 pub fn isZip(bytes: []const u8) bool {
     return bytes.len >= 2 and bytes[0] == 'P' and bytes[1] == 'K';
+}
+
+fn isZlibStream(bytes: []const u8) bool {
+    if (bytes.len < 2) return false;
+    const cmf = bytes[0];
+    const flg = bytes[1];
+    const compression_method = cmf & 0x0f;
+    const compression_info = cmf >> 4;
+    const header = (@as(u16, cmf) << 8) | flg;
+
+    return compression_method == 8 and
+        compression_info <= 7 and
+        (flg & 0x20) == 0 and
+        header % 31 == 0;
 }
 
 pub fn parseMovieProto(allocator: std.mem.Allocator, bytes: []const u8) ParseError!model.MovieSpec {
@@ -1149,6 +1164,11 @@ const ProtoReader = struct {
         return error.InvalidData;
     }
 };
+
+test "metadata parser rejects bytes that cannot be zip or zlib" {
+    const bytes = [_]u8{ 0, 1, 2, 3 };
+    try std.testing.expectError(error.InvalidData, parseMovieMetadata(std.testing.allocator, &bytes));
+}
 
 test "protobuf metadata parser reads movie params and counts repeated fields" {
     const proto = [_]u8{
