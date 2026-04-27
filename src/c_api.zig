@@ -665,6 +665,26 @@ export fn svga_movie_get_render_item_table(
     return statusCode(.ok);
 }
 
+export fn svga_movie_get_visual_frame_table(
+    movie_handle: ?*const MovieHandle,
+    out_indices: ?*?[*]const u32,
+    out_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const indices_out = out_indices orelse return statusCode(.null_argument);
+    const count_out = out_count orelse return statusCode(.null_argument);
+
+    indices_out.* = null;
+    count_out.* = 0;
+
+    const movie = movieFromConstHandle(handle);
+    if (movie.visual_frame_indices.len > 0) {
+        indices_out.* = movie.visual_frame_indices.ptr;
+    }
+    count_out.* = movie.visual_frame_indices.len;
+    return statusCode(.ok);
+}
+
 export fn svga_movie_parse(bytes: ?[*]const u8, byte_count: usize, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
     const out = out_movie orelse return statusCode(.null_argument);
     out.* = null;
@@ -926,6 +946,17 @@ test "C API exposes parsed assets, audio, and shapes" {
     try std.testing.expect(item_table == null);
     try std.testing.expectEqual(@as(usize, 60), item_range_count);
     try std.testing.expect(item_ranges != null);
+
+    var visual_frames: ?[*]const u32 = null;
+    var visual_frame_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_visual_frame_table(out_movie, &visual_frames, &visual_frame_count),
+    );
+    try std.testing.expectEqual(@as(usize, 60), visual_frame_count);
+    try std.testing.expect(visual_frames != null);
+    try std.testing.expectEqual(@as(u32, 0), visual_frames.?[0]);
+    try std.testing.expectEqual(@as(u32, 0), visual_frames.?[59]);
 }
 
 test "C API exposes parsed path commands" {

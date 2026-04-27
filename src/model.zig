@@ -283,6 +283,7 @@ pub const Movie = struct {
     render_frame_ranges: []RenderRange,
     render_items: []RenderItem,
     render_item_frame_ranges: []RenderRange,
+    visual_frame_indices: []u32,
 
     pub fn init(allocator: std.mem.Allocator, spec: MovieSpec) !Movie {
         try validateSpec(spec);
@@ -331,6 +332,12 @@ pub const Movie = struct {
 
         const render_data = try buildRenderData(allocator, sprites, spec.frames);
         errdefer render_data.deinit(allocator);
+        const visual_frame_indices = try buildVisualFrameIndices(
+            allocator,
+            render_data.items,
+            render_data.item_ranges,
+        );
+        errdefer allocator.free(visual_frame_indices);
 
         return .{
             .version = try allocator.dupeZ(u8, spec.version),
@@ -349,6 +356,7 @@ pub const Movie = struct {
             .render_frame_ranges = render_data.command_ranges,
             .render_items = render_data.items,
             .render_item_frame_ranges = render_data.item_ranges,
+            .visual_frame_indices = visual_frame_indices,
         };
     }
 
@@ -358,6 +366,7 @@ pub const Movie = struct {
         allocator.free(self.render_frame_ranges);
         allocator.free(self.render_items);
         allocator.free(self.render_item_frame_ranges);
+        allocator.free(self.visual_frame_indices);
         for (self.assets) |*asset| {
             asset.deinit(allocator);
         }
@@ -420,6 +429,11 @@ pub const Movie = struct {
         if (frame_index >= self.render_item_frame_ranges.len) return null;
         const range = self.render_item_frame_ranges[frame_index];
         return self.render_items[range.start .. range.start + range.count];
+    }
+
+    pub fn visualFrameIndex(self: *const Movie, frame_index: usize) ?u32 {
+        if (frame_index >= self.visual_frame_indices.len) return null;
+        return self.visual_frame_indices[frame_index];
     }
 };
 
@@ -843,6 +857,71 @@ fn renderItemForFrame(sprite: *const Sprite, sprite_index: usize, frame_index: u
     };
 }
 
+fn buildVisualFrameIndices(
+    allocator: std.mem.Allocator,
+    items: []const RenderItem,
+    ranges: []const RenderRange,
+) ![]u32 {
+    var indices = try allocator.alloc(u32, ranges.len);
+    errdefer allocator.free(indices);
+
+    for (ranges, 0..) |range, frame_index| {
+        const current = items[range.start .. range.start + range.count];
+        if (frame_index > 0) {
+            const previous_range = ranges[frame_index - 1];
+            const previous = items[previous_range.start .. previous_range.start + previous_range.count];
+            if (renderItemSlicesEqual(current, previous)) {
+                indices[frame_index] = indices[frame_index - 1];
+                continue;
+            }
+        }
+        indices[frame_index] = @intCast(frame_index);
+    }
+
+    return indices;
+}
+
+fn renderItemSlicesEqual(left: []const RenderItem, right: []const RenderItem) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |left_item, right_item| {
+        if (!renderItemsEqual(left_item, right_item)) return false;
+    }
+    return true;
+}
+
+fn renderItemsEqual(left: RenderItem, right: RenderItem) bool {
+    return left.sprite_index == right.sprite_index and
+        f32BitsEqual(left.opacity, right.opacity) and
+        layoutsEqual(left.bounds, right.bounds) and
+        transformsEqual(left.transform, right.transform) and
+        left.is_matte == right.is_matte and
+        left.has_matte == right.has_matte and
+        left.has_clip_path == right.has_clip_path and
+        left.has_shapes == right.has_shapes and
+        (left.has_clip_path == 0 or left.frame_index == right.frame_index) and
+        (left.has_shapes == 0 or left.shape_frame_index == right.shape_frame_index);
+}
+
+fn layoutsEqual(left: Layout, right: Layout) bool {
+    return f32BitsEqual(left.x, right.x) and
+        f32BitsEqual(left.y, right.y) and
+        f32BitsEqual(left.width, right.width) and
+        f32BitsEqual(left.height, right.height);
+}
+
+fn transformsEqual(left: Transform, right: Transform) bool {
+    return f32BitsEqual(left.a, right.a) and
+        f32BitsEqual(left.b, right.b) and
+        f32BitsEqual(left.c, right.c) and
+        f32BitsEqual(left.d, right.d) and
+        f32BitsEqual(left.tx, right.tx) and
+        f32BitsEqual(left.ty, right.ty);
+}
+
+fn f32BitsEqual(left: f32, right: f32) bool {
+    return @as(u32, @bitCast(left)) == @as(u32, @bitCast(right));
+}
+
 pub fn validateSpec(spec: MovieSpec) ValidationError!void {
     if (spec.version.len > max_version_bytes) return error.InvalidVersion;
     if (std.mem.indexOfScalar(u8, spec.version, 0) != null) return error.InvalidVersion;
@@ -990,6 +1069,48 @@ test "render items resolve keep-frame shape source once" {
     try std.testing.expectEqual(@as(u32, 1), keep_items[0].frame_index);
     try std.testing.expectEqual(@as(u32, 0), keep_items[0].shape_frame_index);
     try std.testing.expectEqual(@as(u8, 1), keep_items[0].has_shapes);
+}
+
+test "visual frame indices alias adjacent identical static frames" {
+    const allocator = std.testing.allocator;
+    var movie = try Movie.init(allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 3,
+        .sprite_count = 1,
+        .sprites = &.{
+            .{
+                .image_key = "image_0",
+                .frames = &.{
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                        }),
+                    },
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                        }),
+                    },
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 5, .y = 0, .width = 10, .height = 10 },
+                        }),
+                    },
+                },
+            },
+        },
+    });
+    defer movie.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u32, 0), movie.visualFrameIndex(0).?);
+    try std.testing.expectEqual(@as(u32, 0), movie.visualFrameIndex(1).?);
+    try std.testing.expectEqual(@as(u32, 2), movie.visualFrameIndex(2).?);
 }
 
 test "movie owns parsed path commands for clips and path shapes" {

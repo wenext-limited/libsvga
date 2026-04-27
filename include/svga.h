@@ -319,6 +319,11 @@ svga_status_t svga_movie_get_render_item_table(
     const svga_render_range_t **out_ranges,
     size_t *out_range_count
 );
+svga_status_t svga_movie_get_visual_frame_table(
+    const svga_movie_t *movie,
+    const uint32_t **out_indices,
+    size_t *out_count
+);
 
 svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_movie_t **out_movie);
 svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_movie);
