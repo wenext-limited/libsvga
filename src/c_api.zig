@@ -82,6 +82,7 @@ pub const FrameInfo = extern struct {
 pub const RenderCommandInfo = model.RenderCommand;
 pub const RenderItemInfo = model.RenderItem;
 pub const RenderRangeInfo = model.RenderRange;
+pub const PathCommandInfo = model.PathCommand;
 
 pub const AssetInfo = extern struct {
     key_utf8: ?[*:0]const u8,
@@ -372,6 +373,63 @@ export fn svga_movie_get_shape_info(
         .has_styles = if (shape.has_styles) 1 else 0,
         .has_transform = if (shape.has_transform) 1 else 0,
     };
+    return statusCode(.ok);
+}
+
+export fn svga_movie_get_frame_clip_path_commands(
+    movie_handle: ?*const MovieHandle,
+    sprite_index: u32,
+    frame_index: u32,
+    out_commands: ?*?[*]const PathCommandInfo,
+    out_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const commands_out = out_commands orelse return statusCode(.null_argument);
+    const count_out = out_count orelse return statusCode(.null_argument);
+
+    commands_out.* = null;
+    count_out.* = 0;
+
+    const movie = movieFromConstHandle(handle);
+    if (sprite_index >= movie.sprites.len) return statusCode(.invalid_argument);
+    const sprite = &movie.sprites[sprite_index];
+    if (frame_index >= sprite.frames.len) return statusCode(.invalid_argument);
+
+    const commands = sprite.frames[frame_index].clip_path_commands;
+    count_out.* = commands.len;
+    if (commands.len > 0) {
+        commands_out.* = commands.ptr;
+    }
+    return statusCode(.ok);
+}
+
+export fn svga_movie_get_shape_path_commands(
+    movie_handle: ?*const MovieHandle,
+    sprite_index: u32,
+    frame_index: u32,
+    shape_index: u32,
+    out_commands: ?*?[*]const PathCommandInfo,
+    out_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const commands_out = out_commands orelse return statusCode(.null_argument);
+    const count_out = out_count orelse return statusCode(.null_argument);
+
+    commands_out.* = null;
+    count_out.* = 0;
+
+    const movie = movieFromConstHandle(handle);
+    if (sprite_index >= movie.sprites.len) return statusCode(.invalid_argument);
+    const sprite = &movie.sprites[sprite_index];
+    if (frame_index >= sprite.frames.len) return statusCode(.invalid_argument);
+    const frame = &sprite.frames[frame_index];
+    if (shape_index >= frame.shapes.len) return statusCode(.invalid_argument);
+
+    const commands = frame.shapes[shape_index].path_commands;
+    count_out.* = commands.len;
+    if (commands.len > 0) {
+        commands_out.* = commands.ptr;
+    }
     return statusCode(.ok);
 }
 
@@ -691,6 +749,65 @@ test "C API exposes parsed assets, audio, and shapes" {
     try std.testing.expect(item_ranges != null);
 }
 
+test "C API exposes parsed path commands" {
+    var movie = try model.Movie.init(std.testing.allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 1,
+        .sprite_count = 1,
+        .sprites = &.{
+            .{
+                .image_key = "vector",
+                .frames = &.{
+                    .{
+                        .frame = .{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                            .shape_count = 1,
+                            .first_shape_type = @intFromEnum(model.ShapeType.shape),
+                            .visible = 1,
+                        },
+                        .clip_path = "M0 0 L10 0 Z",
+                        .shapes = &.{
+                            .{
+                                .shape_type = .shape,
+                                .path_data = "M1 2 C3 4 5 6 7 8",
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    });
+    defer movie.deinit(std.testing.allocator);
+
+    const handle = handleFromMovie(&movie);
+    var clip_commands: ?[*]const PathCommandInfo = null;
+    var clip_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_frame_clip_path_commands(handle, 0, 0, &clip_commands, &clip_count),
+    );
+    try std.testing.expectEqual(@as(usize, 3), clip_count);
+    try std.testing.expect(clip_commands != null);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(model.PathCommandType.move)), clip_commands.?[0].command_type);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(model.PathCommandType.close)), clip_commands.?[2].command_type);
+
+    var shape_commands: ?[*]const PathCommandInfo = null;
+    var shape_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_shape_path_commands(handle, 0, 0, 0, &shape_commands, &shape_count),
+    );
+    try std.testing.expectEqual(@as(usize, 2), shape_count);
+    try std.testing.expect(shape_commands != null);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(model.PathCommandType.cubic)), shape_commands.?[1].command_type);
+    try std.testing.expectEqual(@as(f32, 7), shape_commands.?[1].p2_x);
+    try std.testing.expectEqual(@as(f32, 8), shape_commands.?[1].p2_y);
+}
+
 fn storedZip(test_allocator: std.mem.Allocator, name: []const u8, data: []const u8) ![]u8 {
     var bytes: std.ArrayList(u8) = .empty;
     errdefer bytes.deinit(test_allocator);
@@ -721,7 +838,7 @@ test "C API parse rejects non-SVGA bytes without creating a handle" {
 
 test "C API parses a movie from a filesystem path" {
     const proto = [_]u8{
-        0x0a, 0x05, '2', '.', '1', '.', '0',
+        0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
         0x12, 0x0e, 0x0d, 0x00, 0x00, 0xa0, 0x43,
         0x15, 0x00, 0x00, 0x70, 0x43, 0x18, 0x1e,
         0x20, 0x3c,

@@ -115,6 +115,24 @@ typedef struct svga_render_range {
 } svga_render_range_t;
 
 enum {
+    SVGA_PATH_COMMAND_MOVE = 0,
+    SVGA_PATH_COMMAND_LINE = 1,
+    SVGA_PATH_COMMAND_QUAD = 2,
+    SVGA_PATH_COMMAND_CUBIC = 3,
+    SVGA_PATH_COMMAND_CLOSE = 4,
+};
+
+typedef struct svga_path_command_info {
+    int32_t command_type;
+    float p0_x;
+    float p0_y;
+    float p1_x;
+    float p1_y;
+    float p2_x;
+    float p2_y;
+} svga_path_command_info_t;
+
+enum {
     SVGA_ASSET_UNKNOWN = 0,
     SVGA_ASSET_IMAGE_BYTES = 1,
     SVGA_ASSET_FILENAME = 2,
@@ -226,6 +244,21 @@ svga_status_t svga_movie_get_shape_info(
     uint32_t frame_index,
     uint32_t shape_index,
     svga_shape_info_t *out_info
+);
+svga_status_t svga_movie_get_frame_clip_path_commands(
+    const svga_movie_t *movie,
+    uint32_t sprite_index,
+    uint32_t frame_index,
+    const svga_path_command_info_t **out_commands,
+    size_t *out_count
+);
+svga_status_t svga_movie_get_shape_path_commands(
+    const svga_movie_t *movie,
+    uint32_t sprite_index,
+    uint32_t frame_index,
+    uint32_t shape_index,
+    const svga_path_command_info_t **out_commands,
+    size_t *out_count
 );
 svga_status_t svga_movie_get_render_commands(
     const svga_movie_t *movie,

@@ -1,4 +1,5 @@
 const std = @import("std");
+const svg_path = @import("svg_path.zig");
 
 pub const max_version_bytes = 255;
 
@@ -50,6 +51,9 @@ pub const ShapeType = enum(i32) {
     ellipse = 2,
     keep = 3,
 };
+
+pub const PathCommand = svg_path.Command;
+pub const PathCommandType = svg_path.CommandType;
 
 pub const AssetKind = enum(i32) {
     unknown = 0,
@@ -450,6 +454,7 @@ pub const Sprite = struct {
 pub const OwnedFrame = struct {
     frame: Frame,
     clip_path: [:0]u8,
+    clip_path_commands: []PathCommand,
     shapes: []Shape,
 
     pub fn init(allocator: std.mem.Allocator, spec: FrameSpec) !OwnedFrame {
@@ -466,9 +471,13 @@ pub const OwnedFrame = struct {
             initialized_shapes += 1;
         }
 
+        const clip_path_commands = try svg_path.parse(allocator, spec.clip_path);
+        errdefer allocator.free(clip_path_commands);
+
         return .{
             .frame = spec.frame,
             .clip_path = try allocator.dupeZ(u8, spec.clip_path),
+            .clip_path_commands = clip_path_commands,
             .shapes = shapes,
         };
     }
@@ -478,6 +487,7 @@ pub const OwnedFrame = struct {
             shape.deinit(allocator);
         }
         allocator.free(self.shapes);
+        allocator.free(self.clip_path_commands);
         allocator.free(self.clip_path);
         self.* = undefined;
     }
@@ -497,6 +507,7 @@ pub const OwnedFrame = struct {
 pub const Shape = struct {
     shape_type: ShapeType,
     path_data: [:0]u8,
+    path_commands: []PathCommand,
     rect: RectArgs,
     ellipse: EllipseArgs,
     styles: ShapeStyle,
@@ -505,9 +516,16 @@ pub const Shape = struct {
     has_transform: bool,
 
     pub fn init(allocator: std.mem.Allocator, spec: ShapeSpec) !Shape {
+        const path_commands = if (spec.shape_type == .shape)
+            try svg_path.parse(allocator, spec.path_data)
+        else
+            try allocator.alloc(PathCommand, 0);
+        errdefer allocator.free(path_commands);
+
         return .{
             .shape_type = spec.shape_type,
             .path_data = try allocator.dupeZ(u8, spec.path_data),
+            .path_commands = path_commands,
             .rect = spec.rect,
             .ellipse = spec.ellipse,
             .styles = spec.styles,
@@ -518,6 +536,7 @@ pub const Shape = struct {
     }
 
     pub fn deinit(self: *Shape, allocator: std.mem.Allocator) void {
+        allocator.free(self.path_commands);
         allocator.free(self.path_data);
         self.* = undefined;
     }
@@ -786,6 +805,54 @@ test "render items resolve keep-frame shape source once" {
     try std.testing.expectEqual(@as(u32, 1), keep_items[0].frame_index);
     try std.testing.expectEqual(@as(u32, 0), keep_items[0].shape_frame_index);
     try std.testing.expectEqual(@as(u8, 1), keep_items[0].has_shapes);
+}
+
+test "movie owns parsed path commands for clips and path shapes" {
+    const allocator = std.testing.allocator;
+    var movie = try Movie.init(allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 1,
+        .sprite_count = 1,
+        .sprites = &.{
+            .{
+                .image_key = "vector",
+                .frames = &.{
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                            .first_shape_type = @intFromEnum(ShapeType.shape),
+                            .shape_count = 1,
+                        }),
+                        .clip_path = "M0 0 L10 0 L10 10 Z",
+                        .shapes = &.{
+                            .{
+                                .shape_type = .shape,
+                                .path_data = "M1 2 h3 v4 z",
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    });
+    defer movie.deinit(allocator);
+
+    const frame = &movie.sprites[0].frames[0];
+    try std.testing.expectEqual(@as(usize, 4), frame.clip_path_commands.len);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.move)), frame.clip_path_commands[0].command_type);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.close)), frame.clip_path_commands[3].command_type);
+
+    const shape = &frame.shapes[0];
+    try std.testing.expectEqual(@as(usize, 4), shape.path_commands.len);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.move)), shape.path_commands[0].command_type);
+    try std.testing.expectEqual(@as(f32, 4), shape.path_commands[1].p0_x);
+    try std.testing.expectEqual(@as(f32, 2), shape.path_commands[1].p0_y);
+    try std.testing.expectEqual(@as(f32, 4), shape.path_commands[2].p0_x);
+    try std.testing.expectEqual(@as(f32, 6), shape.path_commands[2].p0_y);
 }
 
 test "movie metadata accepts positive fps outside documented player values" {

@@ -4,6 +4,7 @@ pub const model = @import("model.zig");
 pub const core = @import("core.zig");
 pub const c_api = @import("c_api.zig");
 pub const parser = @import("parser.zig");
+pub const svg_path = @import("svg_path.zig");
 
 pub const Movie = model.Movie;
 pub const MovieInfo = model.MovieInfo;
