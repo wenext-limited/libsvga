@@ -1,0 +1,97 @@
+name: Zig CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native checks
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Check formatting
+        run: zig fmt --check build.zig src tools
+
+      - name: Test with system zlib
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
+        run: zig build test
+
+      - name: Test with portable inflate
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
+        run: zig build test -Dsystem-zlib=false
+
+  cross:
+    name: Cross build (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: android-aarch64
+            target: aarch64-linux-android
+          - name: android-armv7
+            target: arm-linux-androideabi
+          - name: android-x86_64
+            target: x86_64-linux-android
+          - name: android-x86
+            target: x86-linux-android
+          - name: wasm32-wasi
+            target: wasm32-wasi
+          - name: wasm32-freestanding
+            target: wasm32-freestanding
+          - name: wasm32-emscripten
+            target: wasm32-emscripten
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build target
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dsystem-zlib=false -Dbuild-probe=false
+
+  package-smoke:
+    name: Package smoke test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build portable packages
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
+        run: zig build package-release -Doptimize=ReleaseFast -Dskip-apple-package=true -Drelease-version=ci -Drelease-dir=zig-out/ci-release
+
+      - name: Check package count
+        run: |
+          count="$(find zig-out/ci-release -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')"
+          test "$count" = "7"
