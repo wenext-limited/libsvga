@@ -34,6 +34,11 @@ const has_filesystem = switch (builtin.target.os.tag) {
     else => true,
 };
 
+const has_network = switch (builtin.target.os.tag) {
+    .freestanding, .emscripten => false,
+    else => true,
+};
+
 pub const MovieDesc = extern struct {
     abi_version: u32,
     view_box_width: f32,
@@ -56,6 +61,11 @@ pub const MovieInfo = extern struct {
     sprite_count: u32,
     audio_count: u32,
     version_utf8: ?[*:0]const u8,
+};
+
+pub const DownloadOptions = extern struct {
+    abi_version: u32,
+    max_input_bytes: usize,
 };
 
 pub const Rect = extern struct {
@@ -860,6 +870,33 @@ export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieH
     return statusCode(.ok);
 }
 
+export fn svga_movie_download(
+    url_utf8: ?[*:0]const u8,
+    download_options: ?*const DownloadOptions,
+    out_movie: ?*?*MovieHandle,
+) callconv(.c) i32 {
+    const out = out_movie orelse return statusCode(.null_argument);
+    out.* = null;
+
+    if (!comptime has_network) return statusCode(.unsupported);
+
+    const url_ptr = url_utf8 orelse return statusCode(.null_argument);
+    const url = std.mem.span(url_ptr);
+    if (url.len == 0) return statusCode(.invalid_argument);
+
+    var options: core.DownloadOptions = .{};
+    if (download_options) |provided| {
+        if (provided.abi_version != abi_version) return statusCode(.invalid_argument);
+        if (provided.max_input_bytes != 0) {
+            options.max_input_bytes = provided.max_input_bytes;
+        }
+    }
+
+    const movie = core.downloadMovie(allocator, url, options) catch |err| return statusCode(statusFromError(err));
+    out.* = handleFromMovie(movie);
+    return statusCode(.ok);
+}
+
 export fn svga_frame_index_for_time(
     frame_count: i32,
     fps: i32,
@@ -1039,10 +1076,20 @@ fn statusFromError(err: anyerror) Status {
         error.InvalidMovieCounts,
         error.InvalidSpriteKey,
         error.InvalidFrameCount,
+        error.InvalidUrl,
+        error.UnexpectedCharacter,
+        error.InvalidFormat,
+        error.InvalidPort,
+        error.UriMissingHost,
+        error.UriHostTooLong,
         => .invalid_argument,
         error.UnsupportedContainer,
         error.UnsupportedZip,
         error.UnsupportedZipMethod,
+        error.UnsupportedNetwork,
+        error.UnsupportedUriScheme,
+        error.UnsupportedCompressionMethod,
+        error.HttpContentEncodingUnsupported,
         => .unsupported,
         error.InvalidData,
         error.InvalidWireType,
@@ -1068,6 +1115,32 @@ fn statusFromError(err: anyerror) Status {
         error.IsDir,
         error.NotDir,
         error.InputOutput,
+        error.StreamTooLong,
+        error.HttpStatusError,
+        error.ConnectionRefused,
+        error.NetworkUnreachable,
+        error.ConnectionTimedOut,
+        error.ConnectionResetByPeer,
+        error.TemporaryNameServerFailure,
+        error.NameServerFailure,
+        error.UnknownHostName,
+        error.HostLacksNetworkAddresses,
+        error.UnexpectedConnectFailure,
+        error.TlsInitializationFailed,
+        error.CertificateBundleLoadFailure,
+        error.HttpHeadersInvalid,
+        error.TooManyHttpRedirects,
+        error.RedirectRequiresResend,
+        error.HttpRedirectLocationMissing,
+        error.HttpRedirectLocationOversize,
+        error.HttpRedirectLocationInvalid,
+        error.HttpChunkInvalid,
+        error.HttpChunkTruncated,
+        error.HttpHeadersOversize,
+        error.HttpRequestTruncated,
+        error.HttpConnectionClosing,
+        error.ReadFailed,
+        error.WriteFailed,
         error.Unexpected,
         => .io_error,
         else => .internal_error,
@@ -1888,6 +1961,34 @@ test "C API parses a movie from a filesystem path" {
     var info: MovieInfo = undefined;
     try std.testing.expectEqual(statusCode(.ok), svga_movie_get_info(out_movie, &info));
     try std.testing.expectEqual(@as(i32, 60), info.frames);
+}
+
+test "C API downloader validates URL and options before network access" {
+    var out_movie: ?*MovieHandle = undefined;
+
+    try std.testing.expectEqual(
+        statusCode(.null_argument),
+        svga_movie_download(null, null, &out_movie),
+    );
+    try std.testing.expect(out_movie == null);
+
+    const empty_url = "";
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_movie_download(empty_url, null, &out_movie),
+    );
+    try std.testing.expect(out_movie == null);
+
+    const url = "https://example.com/file.svga";
+    const options = DownloadOptions{
+        .abi_version = abi_version + 1,
+        .max_input_bytes = 1,
+    };
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_movie_download(url, &options, &out_movie),
+    );
+    try std.testing.expect(out_movie == null);
 }
 
 test "C API status messages tolerate unknown values" {

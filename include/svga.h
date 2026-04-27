@@ -10,8 +10,8 @@
  * metadata. The API is designed for Swift, Objective-C, Kotlin/JNI, C/C++, and
  * WebAssembly bindings:
  *
- * - Create a movie with svga_movie_parse(), svga_movie_parse_file(), or
- *   svga_movie_create().
+ * - Create a movie with svga_movie_parse(), svga_movie_parse_file(),
+ *   svga_movie_download(), or svga_movie_create().
  * - Query metadata, assets, timeline state, and precomputed render tables.
  * - Release the movie with svga_movie_destroy().
  *
@@ -114,6 +114,18 @@ typedef struct svga_movie_info {
     /** Borrowed NUL-terminated UTF-8 string. Valid until movie destruction. */
     const char *version_utf8;
 } svga_movie_info_t;
+
+/** Options for svga_movie_download(). */
+typedef struct svga_download_options {
+    /** Must be SVGA_ABI_VERSION. */
+    uint32_t abi_version;
+    /**
+     * Maximum response bytes accepted before parsing.
+     *
+     * Use zero for the library default.
+     */
+    size_t max_input_bytes;
+} svga_download_options_t;
 
 /** Float rectangle in SVGA source units. */
 typedef struct svga_rect {
@@ -862,6 +874,26 @@ svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_mov
  * @return SVGA_STATUS_OK on success, otherwise IO, parse, validation, or unsupported status.
  */
 svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_movie);
+
+/**
+ * Downloads an SVGA URL into memory and parses the downloaded bytes.
+ *
+ * This is a convenience API for the direct URL -> bytes -> parser path. It
+ * does not write the response to disk, and it does not implement filesystem
+ * cache policy. Some targets, such as freestanding WASM and Emscripten builds,
+ * do not expose network access through this ABI and return
+ * SVGA_STATUS_UNSUPPORTED.
+ *
+ * @param url_utf8 NUL-terminated UTF-8 http/https URL. Must not be NULL or empty.
+ * @param options Optional download limits. May be NULL for defaults.
+ * @param out_movie Receives a new movie handle on success. Must not be NULL.
+ * @return SVGA_STATUS_OK on success, otherwise network, parse, validation, or unsupported status.
+ */
+svga_status_t svga_movie_download(
+    const char *url_utf8,
+    const svga_download_options_t *options,
+    svga_movie_t **out_movie
+);
 
 /* Playback and layout helpers. */
 

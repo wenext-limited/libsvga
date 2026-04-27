@@ -79,6 +79,9 @@ const libsvga = @import("libsvga");
 
 const movie = try libsvga.parseMovieFile(allocator, path, .{});
 defer libsvga.destroyMovie(allocator, movie);
+
+const remote_movie = try libsvga.downloadMovie(allocator, "https://example.com/anim.svga", .{});
+defer libsvga.destroyMovie(allocator, remote_movie);
 ```
 
 The public C ABI is declared in `include/svga.h`.
@@ -94,6 +97,12 @@ svga_status_t svga_movie_parse(
 
 svga_status_t svga_movie_parse_file(
     const char *path_utf8,
+    svga_movie_t **out_movie
+);
+
+svga_status_t svga_movie_download(
+    const char *url_utf8,
+    const svga_download_options_t *options,
     svga_movie_t **out_movie
 );
 
@@ -166,6 +175,10 @@ movie handle and remain valid until `svga_movie_destroy`.
 `svga_movie_parse_file` reads local filesystem paths in Zig before parsing, so
 platform bindings do not need to materialize an intermediate byte buffer when
 they already have a file URL.
+`svga_movie_download` downloads an HTTP/HTTPS response into a bounded memory
+buffer and then calls the same byte parser. It does not write the response to
+disk; platform layers should still own cache policy, custom headers, and
+session/authentication behavior.
 
 Missing asset keys return `SVGA_STATUS_INVALID_ARGUMENT` and clear the output
 record. Resolved image/audio asset helpers preserve SVGAPlayerSwift's filename
@@ -203,6 +216,7 @@ SVGAPlayer-iOS parser on private fixtures. A recent `ITERATIONS=3` run:
 `libsvga` should own:
 
 - container detection
+- optional direct HTTP/HTTPS download-to-memory parsing
 - zlib/zip decode
 - protobuf and legacy JSON parsing
 - normalized movie, sprite, frame, shape, audio, and asset records
@@ -211,7 +225,8 @@ SVGAPlayer-iOS parser on private fixtures. A recent `ITERATIONS=3` run:
 
 Platform layers should own:
 
-- network and filesystem cache policy
+- network session policy, request headers, authentication, and filesystem cache
+  policy
 - `UIImage`/`CGImage`/bitmap decode
 - `CALayer`, `CAShapeLayer`, SwiftUI, or Android rendering
 - audio playback

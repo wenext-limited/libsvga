@@ -14,9 +14,12 @@ pub const svg_path = @import("svg_path.zig");
 pub const Movie = model.Movie;
 pub const MovieInfo = model.MovieInfo;
 pub const ParseFileOptions = core.ParseFileOptions;
+pub const DownloadOptions = core.DownloadOptions;
 pub const default_max_input_bytes = core.default_max_input_bytes;
 pub const parseMovie = core.parseMovie;
 pub const parseMovieFile = core.parseMovieFile;
+pub const downloadMovie = core.downloadMovie;
+pub const downloadBytes = core.downloadBytes;
 pub const destroyMovie = core.destroyMovie;
 
 test {
