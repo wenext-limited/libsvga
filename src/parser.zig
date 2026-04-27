@@ -1,8 +1,10 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const model = @import("model.zig");
-const zlib = @cImport({
+const flate = std.compress.flate;
+const zlib = if (build_options.use_system_zlib) @cImport({
     @cInclude("zlib.h");
-});
+}) else struct {};
 
 pub const ParseError = error{
     UnsupportedContainer,
@@ -630,6 +632,16 @@ fn normalizedZipName(name: []const u8) []const u8 {
 }
 
 fn inflateRawDeflate(allocator: std.mem.Allocator, bytes: []const u8, expected_size: u32) ParseError![]u8 {
+    if (!comptime build_options.use_system_zlib) {
+        return inflateWithStdFlate(
+            allocator,
+            bytes,
+            .raw,
+            if (expected_size > 0) @intCast(expected_size) else @max(bytes.len * 3 + 4096, 4096),
+            error.InvalidDeflateStream,
+        );
+    }
+
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
@@ -994,6 +1006,16 @@ fn isMp3Data(bytes: []const u8) bool {
 }
 
 fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]u8 {
+    if (!comptime build_options.use_system_zlib) {
+        return inflateWithStdFlate(
+            allocator,
+            bytes,
+            .zlib,
+            @max(bytes.len * 3 + 4096, 4096),
+            error.InvalidZlibStream,
+        );
+    }
+
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
@@ -1027,6 +1049,28 @@ fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]u8 
             else => return error.InvalidZlibStream,
         }
     }
+}
+
+fn inflateWithStdFlate(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    container: flate.Container,
+    initial_capacity: usize,
+    invalid_error: ParseError,
+) ParseError![]u8 {
+    var input: std.Io.Reader = .fixed(bytes);
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    try output.ensureTotalCapacity(allocator, initial_capacity);
+
+    var window: [flate.max_window_len]u8 = undefined;
+    var decompress: flate.Decompress = .init(&input, container, &window);
+    decompress.reader.appendRemainingUnlimited(allocator, &output) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ReadFailed => return invalid_error,
+    };
+
+    return output.toOwnedSlice(allocator);
 }
 
 const Tag = struct {

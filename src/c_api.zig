@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const core = @import("core.zig");
 const model = @import("model.zig");
 
@@ -16,7 +17,14 @@ pub const Status = enum(i32) {
 };
 
 const MovieHandle = opaque {};
-const allocator = std.heap.smp_allocator;
+const allocator = if (builtin.single_threaded or builtin.target.cpu.arch.isWasm())
+    std.heap.page_allocator
+else
+    std.heap.smp_allocator;
+const has_filesystem = switch (builtin.target.os.tag) {
+    .freestanding, .emscripten => false,
+    else => true,
+};
 
 pub const MovieDesc = extern struct {
     abi_version: u32,
@@ -832,6 +840,8 @@ export fn svga_movie_parse(bytes: ?[*]const u8, byte_count: usize, out_movie: ?*
 export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
     const out = out_movie orelse return statusCode(.null_argument);
     out.* = null;
+
+    if (!comptime has_filesystem) return statusCode(.unsupported);
 
     const path_ptr = path_utf8 orelse return statusCode(.null_argument);
     const path = std.mem.span(path_ptr);

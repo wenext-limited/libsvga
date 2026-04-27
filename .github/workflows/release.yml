@@ -1,0 +1,36 @@
+name: Release Packages
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Build and upload release packages
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build release packages
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
+        run: zig build package-release -Doptimize=ReleaseFast -Drelease-version="${{ github.event.release.tag_name }}"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zig-out/release/*.tar.gz
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
