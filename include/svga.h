@@ -21,6 +21,7 @@ enum {
     SVGA_STATUS_UNSUPPORTED = 4,
     SVGA_STATUS_INTERNAL_ERROR = 5,
     SVGA_STATUS_PARSE_ERROR = 6,
+    SVGA_STATUS_IO_ERROR = 7,
 };
 
 typedef struct svga_movie svga_movie_t;
@@ -216,6 +217,7 @@ svga_status_t svga_movie_get_render_commands(
 );
 
 svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_movie_t **out_movie);
+svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_movie);
 
 /* Compatibility aliases for early Swift wrappers. */
 static inline svga_status_t svga_movie_decode(

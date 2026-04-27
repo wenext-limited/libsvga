@@ -12,10 +12,12 @@ pub const Status = enum(i32) {
     unsupported = 4,
     internal_error = 5,
     parse_error = 6,
+    io_error = 7,
 };
 
 const MovieHandle = opaque {};
 const allocator = std.heap.smp_allocator;
+const max_input_bytes = 256 * 1024 * 1024;
 
 pub const MovieDesc = extern struct {
     abi_version: u32,
@@ -156,6 +158,7 @@ export fn svga_status_message(status_code: i32) callconv(.c) [*:0]const u8 {
         statusCode(.unsupported) => "unsupported",
         statusCode(.internal_error) => "internal error",
         statusCode(.parse_error) => "parse error",
+        statusCode(.io_error) => "I/O error",
         else => "unknown status",
     };
 }
@@ -401,6 +404,25 @@ export fn svga_movie_parse(bytes: ?[*]const u8, byte_count: usize, out_movie: ?*
     if (byte_count == 0) return statusCode(.invalid_argument);
 
     const input = bytes.?[0..byte_count];
+    return parseMovieBytes(input, out);
+}
+
+export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
+    const out = out_movie orelse return statusCode(.null_argument);
+    out.* = null;
+
+    const path_ptr = path_utf8 orelse return statusCode(.null_argument);
+    const path = std.mem.span(path_ptr);
+    if (path.len == 0) return statusCode(.invalid_argument);
+
+    const input = std.fs.cwd().readFileAlloc(allocator, path, max_input_bytes) catch |err| return statusCode(statusFromError(err));
+    defer allocator.free(input);
+    if (input.len == 0) return statusCode(.invalid_argument);
+
+    return parseMovieBytes(input, out);
+}
+
+fn parseMovieBytes(input: []const u8, out: *?*MovieHandle) i32 {
     var parsed = parser.parseMovieMetadata(allocator, input) catch |err| return statusCode(statusFromError(err));
     defer parsed.deinit(allocator);
 
@@ -452,6 +474,23 @@ fn statusFromError(err: anyerror) Status {
         error.MissingMovieSpec,
         error.InvalidJson,
         => .parse_error,
+        error.FileNotFound,
+        error.AccessDenied,
+        error.NameTooLong,
+        error.BadPathName,
+        error.InvalidUtf8,
+        error.SymLinkLoop,
+        error.ProcessFdQuotaExceeded,
+        error.SystemFdQuotaExceeded,
+        error.SystemResources,
+        error.NoDevice,
+        error.DeviceBusy,
+        error.FileTooBig,
+        error.IsDir,
+        error.NotDir,
+        error.InputOutput,
+        error.Unexpected,
+        => .io_error,
         else => .internal_error,
     };
 }
@@ -567,6 +606,35 @@ test "C API parse rejects non-SVGA bytes without creating a handle" {
         svga_movie_parse(bytes[0..].ptr, bytes.len, &out_movie),
     );
     try std.testing.expect(out_movie == null);
+}
+
+test "C API parses a movie from a filesystem path" {
+    const proto = [_]u8{
+        0x0a, 0x05, '2', '.', '1', '.', '0',
+        0x12, 0x0e, 0x0d, 0x00, 0x00, 0xa0, 0x43,
+        0x15, 0x00, 0x00, 0x70, 0x43, 0x18, 0x1e,
+        0x20, 0x3c,
+    };
+
+    const zip = try storedZip(std.testing.allocator, "movie.binary", &proto);
+    defer std.testing.allocator.free(zip);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "fixture.svga", .data = zip });
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "fixture.svga");
+    defer std.testing.allocator.free(path);
+    const path_z = try std.testing.allocator.dupeZ(u8, path);
+    defer std.testing.allocator.free(path_z);
+
+    var out_movie: ?*MovieHandle = null;
+    try std.testing.expectEqual(statusCode(.ok), svga_movie_parse_file(path_z.ptr, &out_movie));
+    defer svga_movie_destroy(out_movie);
+
+    var info: MovieInfo = undefined;
+    try std.testing.expectEqual(statusCode(.ok), svga_movie_get_info(out_movie, &info));
+    try std.testing.expectEqual(@as(i32, 60), info.frames);
 }
 
 test "C API status messages tolerate unknown values" {

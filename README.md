@@ -59,10 +59,10 @@ By default the script writes:
 
 - `../SVGAPlayerSwift/Binaries/libsvga-static.xcframework`
 
-The current artifact contains macOS `arm64`/`x86_64`, iOS device `arm64`, and
-iOS simulator `arm64`/`x86_64` slices. It is layered on top of the portable C
-ABI; Android and other consumers should keep using the raw Zig library/header
-outputs for their own platform packaging.
+The current artifact contains macOS `arm64`, iOS device `arm64`, and iOS
+simulator `arm64` slices. It is layered on top of the portable C ABI; Android
+and other consumers should keep using the raw Zig library/header outputs for
+their own platform packaging.
 
 ## C ABI
 
@@ -74,6 +74,11 @@ The core API uses opaque handles and explicit ownership:
 svga_status_t svga_movie_parse(
     const uint8_t *bytes,
     size_t byte_count,
+    svga_movie_t **out_movie
+);
+
+svga_status_t svga_movie_parse_file(
+    const char *path_utf8,
     svga_movie_t **out_movie
 );
 
@@ -125,6 +130,9 @@ void svga_movie_destroy(svga_movie_t *movie);
 
 Strings and byte buffers returned through info structs are borrowed from the
 movie handle and remain valid until `svga_movie_destroy`.
+`svga_movie_parse_file` reads local filesystem paths in Zig before parsing, so
+platform bindings do not need to materialize an intermediate byte buffer when
+they already have a file URL.
 
 ## Probe Tool
 
