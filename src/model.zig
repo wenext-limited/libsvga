@@ -516,7 +516,6 @@ pub const Sprite = struct {
 pub const OwnedFrame = struct {
     frame: Frame,
     clip_path: [:0]u8,
-    clip_path_commands: []PathCommand,
     shapes: []Shape,
 
     pub fn init(allocator: std.mem.Allocator, spec: FrameSpec) !OwnedFrame {
@@ -533,13 +532,9 @@ pub const OwnedFrame = struct {
             initialized_shapes += 1;
         }
 
-        const clip_path_commands = try svg_path.parse(allocator, spec.clip_path);
-        errdefer allocator.free(clip_path_commands);
-
         return .{
             .frame = spec.frame,
             .clip_path = try allocator.dupeZ(u8, spec.clip_path),
-            .clip_path_commands = clip_path_commands,
             .shapes = shapes,
         };
     }
@@ -549,7 +544,6 @@ pub const OwnedFrame = struct {
             shape.deinit(allocator);
         }
         allocator.free(self.shapes);
-        allocator.free(self.clip_path_commands);
         allocator.free(self.clip_path);
         self.* = undefined;
     }
@@ -569,7 +563,6 @@ pub const OwnedFrame = struct {
 pub const Shape = struct {
     shape_type: ShapeType,
     path_data: [:0]u8,
-    path_commands: []PathCommand,
     rect: RectArgs,
     ellipse: EllipseArgs,
     styles: ShapeStyle,
@@ -578,16 +571,9 @@ pub const Shape = struct {
     has_transform: bool,
 
     pub fn init(allocator: std.mem.Allocator, spec: ShapeSpec) !Shape {
-        const path_commands = if (spec.shape_type == .shape)
-            try svg_path.parse(allocator, spec.path_data)
-        else
-            try allocator.alloc(PathCommand, 0);
-        errdefer allocator.free(path_commands);
-
         return .{
             .shape_type = spec.shape_type,
             .path_data = try allocator.dupeZ(u8, spec.path_data),
-            .path_commands = path_commands,
             .rect = spec.rect,
             .ellipse = spec.ellipse,
             .styles = spec.styles,
@@ -598,7 +584,6 @@ pub const Shape = struct {
     }
 
     pub fn deinit(self: *Shape, allocator: std.mem.Allocator) void {
-        allocator.free(self.path_commands);
         allocator.free(self.path_data);
         self.* = undefined;
     }
@@ -607,17 +592,11 @@ pub const Shape = struct {
 fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !MetadataTables {
     var frame_total: usize = 0;
     var shape_total: usize = 0;
-    var clip_path_command_total: usize = 0;
-    var shape_path_command_total: usize = 0;
 
     for (sprites) |sprite| {
         frame_total += sprite.frames.len;
         for (sprite.frames) |frame| {
             shape_total += frame.shapes.len;
-            clip_path_command_total += frame.clip_path_commands.len;
-            for (frame.shapes) |shape| {
-                shape_path_command_total += shape.path_commands.len;
-            }
         }
     }
 
@@ -631,19 +610,18 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
     errdefer allocator.free(shape_records);
     var frame_shape_ranges = try allocator.alloc(RenderRange, frame_total);
     errdefer allocator.free(frame_shape_ranges);
-    var clip_path_commands = try allocator.alloc(PathCommand, clip_path_command_total);
-    errdefer allocator.free(clip_path_commands);
     var frame_clip_path_command_ranges = try allocator.alloc(RenderRange, frame_total);
     errdefer allocator.free(frame_clip_path_command_ranges);
-    var shape_path_commands = try allocator.alloc(PathCommand, shape_path_command_total);
-    errdefer allocator.free(shape_path_commands);
     var shape_path_command_ranges = try allocator.alloc(RenderRange, shape_total);
     errdefer allocator.free(shape_path_command_ranges);
 
+    var clip_path_commands: std.ArrayList(PathCommand) = .empty;
+    defer clip_path_commands.deinit(allocator);
+    var shape_path_commands: std.ArrayList(PathCommand) = .empty;
+    defer shape_path_commands.deinit(allocator);
+
     var frame_index: usize = 0;
     var shape_index: usize = 0;
-    var clip_path_command_index: usize = 0;
-    var shape_path_command_index: usize = 0;
 
     for (sprites, 0..) |sprite, sprite_index| {
         sprite_records[sprite_index] = spriteRecord(sprite);
@@ -658,31 +636,34 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
                 .start = shape_index,
                 .count = frame.shapes.len,
             };
-            frame_clip_path_command_ranges[frame_index] = .{
-                .start = clip_path_command_index,
-                .count = frame.clip_path_commands.len,
+
+            const clip_path_command_start = clip_path_commands.items.len;
+            const clip_path_command_count = count: {
+                const parsed_clip_path_commands = try svg_path.parse(allocator, frame.clip_path);
+                defer allocator.free(parsed_clip_path_commands);
+                try clip_path_commands.appendSlice(allocator, parsed_clip_path_commands);
+                break :count parsed_clip_path_commands.len;
             };
-            if (frame.clip_path_commands.len > 0) {
-                @memcpy(
-                    clip_path_commands[clip_path_command_index .. clip_path_command_index + frame.clip_path_commands.len],
-                    frame.clip_path_commands,
-                );
-                clip_path_command_index += frame.clip_path_commands.len;
-            }
+            frame_clip_path_command_ranges[frame_index] = .{
+                .start = clip_path_command_start,
+                .count = clip_path_command_count,
+            };
 
             for (frame.shapes) |shape| {
                 shape_records[shape_index] = shapeRecord(shape);
-                shape_path_command_ranges[shape_index] = .{
-                    .start = shape_path_command_index,
-                    .count = shape.path_commands.len,
+
+                const shape_path_command_start = shape_path_commands.items.len;
+                const shape_path_command_count = count: {
+                    if (shape.shape_type != .shape) break :count 0;
+                    const parsed_shape_path_commands = try svg_path.parse(allocator, shape.path_data);
+                    defer allocator.free(parsed_shape_path_commands);
+                    try shape_path_commands.appendSlice(allocator, parsed_shape_path_commands);
+                    break :count parsed_shape_path_commands.len;
                 };
-                if (shape.path_commands.len > 0) {
-                    @memcpy(
-                        shape_path_commands[shape_path_command_index .. shape_path_command_index + shape.path_commands.len],
-                        shape.path_commands,
-                    );
-                    shape_path_command_index += shape.path_commands.len;
-                }
+                shape_path_command_ranges[shape_index] = .{
+                    .start = shape_path_command_start,
+                    .count = shape_path_command_count,
+                };
                 shape_index += 1;
             }
 
@@ -690,15 +671,20 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
         }
     }
 
+    const clip_path_command_slice = try clip_path_commands.toOwnedSlice(allocator);
+    errdefer allocator.free(clip_path_command_slice);
+    const shape_path_command_slice = try shape_path_commands.toOwnedSlice(allocator);
+    errdefer allocator.free(shape_path_command_slice);
+
     return .{
         .sprite_records = sprite_records,
         .frame_records = frame_records,
         .sprite_frame_ranges = sprite_frame_ranges,
         .shape_records = shape_records,
         .frame_shape_ranges = frame_shape_ranges,
-        .clip_path_commands = clip_path_commands,
+        .clip_path_commands = clip_path_command_slice,
         .frame_clip_path_command_ranges = frame_clip_path_command_ranges,
-        .shape_path_commands = shape_path_commands,
+        .shape_path_commands = shape_path_command_slice,
         .shape_path_command_ranges = shape_path_command_ranges,
     };
 }
@@ -1040,24 +1026,18 @@ test "movie owns parsed path commands for clips and path shapes" {
     });
     defer movie.deinit(allocator);
 
-    const frame = &movie.sprites[0].frames[0];
-    try std.testing.expectEqual(@as(usize, 4), frame.clip_path_commands.len);
-    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.move)), frame.clip_path_commands[0].command_type);
-    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.close)), frame.clip_path_commands[3].command_type);
-
-    const shape = &frame.shapes[0];
-    try std.testing.expectEqual(@as(usize, 4), shape.path_commands.len);
-    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.move)), shape.path_commands[0].command_type);
-    try std.testing.expectEqual(@as(f32, 4), shape.path_commands[1].p0_x);
-    try std.testing.expectEqual(@as(f32, 2), shape.path_commands[1].p0_y);
-    try std.testing.expectEqual(@as(f32, 4), shape.path_commands[2].p0_x);
-    try std.testing.expectEqual(@as(f32, 6), shape.path_commands[2].p0_y);
-
     try std.testing.expectEqual(@as(usize, 1), movie.metadata.sprite_records.len);
     try std.testing.expectEqual(@as(usize, 1), movie.metadata.frame_records.len);
     try std.testing.expectEqual(@as(usize, 1), movie.metadata.shape_records.len);
     try std.testing.expectEqual(@as(usize, 4), movie.metadata.clip_path_commands.len);
     try std.testing.expectEqual(@as(usize, 4), movie.metadata.shape_path_commands.len);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.move)), movie.metadata.clip_path_commands[0].command_type);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.close)), movie.metadata.clip_path_commands[3].command_type);
+    try std.testing.expectEqual(@as(i32, @intFromEnum(PathCommandType.move)), movie.metadata.shape_path_commands[0].command_type);
+    try std.testing.expectEqual(@as(f32, 4), movie.metadata.shape_path_commands[1].p0_x);
+    try std.testing.expectEqual(@as(f32, 2), movie.metadata.shape_path_commands[1].p0_y);
+    try std.testing.expectEqual(@as(f32, 4), movie.metadata.shape_path_commands[2].p0_x);
+    try std.testing.expectEqual(@as(f32, 6), movie.metadata.shape_path_commands[2].p0_y);
     try std.testing.expectEqual(@as(usize, 0), movie.metadata.sprite_frame_ranges[0].start);
     try std.testing.expectEqual(@as(usize, 1), movie.metadata.sprite_frame_ranges[0].count);
     try std.testing.expectEqual(@as(usize, 0), movie.metadata.frame_shape_ranges[0].start);

@@ -448,7 +448,14 @@ export fn svga_movie_get_frame_clip_path_commands(
     const sprite = &movie.sprites[sprite_index];
     if (frame_index >= sprite.frames.len) return statusCode(.invalid_argument);
 
-    const commands = sprite.frames[frame_index].clip_path_commands;
+    const metadata = movie.metadata;
+    const global_frame_index = metadata.sprite_frame_ranges[sprite_index].start + frame_index;
+    if (global_frame_index >= metadata.frame_clip_path_command_ranges.len) return statusCode(.invalid_argument);
+    const range = metadata.frame_clip_path_command_ranges[global_frame_index];
+    if (range.start > metadata.clip_path_commands.len or range.count > metadata.clip_path_commands.len - range.start) {
+        return statusCode(.invalid_argument);
+    }
+    const commands = metadata.clip_path_commands[range.start .. range.start + range.count];
     count_out.* = commands.len;
     if (commands.len > 0) {
         commands_out.* = commands.ptr;
@@ -508,7 +515,17 @@ export fn svga_movie_get_shape_path_commands(
     const frame = &sprite.frames[frame_index];
     if (shape_index >= frame.shapes.len) return statusCode(.invalid_argument);
 
-    const commands = frame.shapes[shape_index].path_commands;
+    const metadata = movie.metadata;
+    const global_frame_index = metadata.sprite_frame_ranges[sprite_index].start + frame_index;
+    if (global_frame_index >= metadata.frame_shape_ranges.len) return statusCode(.invalid_argument);
+    const shape_range = metadata.frame_shape_ranges[global_frame_index];
+    const global_shape_index = shape_range.start + shape_index;
+    if (global_shape_index >= metadata.shape_path_command_ranges.len) return statusCode(.invalid_argument);
+    const command_range = metadata.shape_path_command_ranges[global_shape_index];
+    if (command_range.start > metadata.shape_path_commands.len or command_range.count > metadata.shape_path_commands.len - command_range.start) {
+        return statusCode(.invalid_argument);
+    }
+    const commands = metadata.shape_path_commands[command_range.start .. command_range.start + command_range.count];
     count_out.* = commands.len;
     if (commands.len > 0) {
         commands_out.* = commands.ptr;
