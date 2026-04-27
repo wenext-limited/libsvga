@@ -30,7 +30,9 @@ jobs:
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: zig-out/release/*.tar.gz
+          files: |
+            zig-out/release/*.tar.gz
+            zig-out/release/*.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

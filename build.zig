@@ -261,10 +261,12 @@ fn addPortablePackage(
     package_step.dependOn(&tar_package.step);
 }
 
-/// Add an XCFramework tarball for Apple consumers.
+/// Add Apple release artifacts for Apple consumers.
 ///
 /// The slices are still built by Zig. xcodebuild is only used for the final
-/// XCFramework directory layout that Apple tools expect.
+/// XCFramework directory layout that Apple tools expect. The `.xcframework.zip`
+/// places the XCFramework at the zip root, which is the layout SwiftPM binary
+/// targets require.
 fn addApplePackage(
     b: *std.Build,
     package_step: *std.Build.Step,
@@ -281,6 +283,7 @@ fn addApplePackage(
     const package_dir = b.pathJoin(&.{ package_root, package_name });
     const xcframework = b.pathJoin(&.{ package_dir, "libsvga-static.xcframework" });
     const archive = b.fmt("{s}/libsvga-{s}-{s}.tar.gz", .{ release_dir, package_name, safe_version });
+    const spm_archive = b.fmt("{s}/libsvga-static-{s}.xcframework.zip", .{ release_dir, safe_version });
 
     const mkdir_package = sideEffectCommand(b, &.{ "mkdir", "-p", package_dir });
     mkdir_package.step.dependOn(mkdir_release_step);
@@ -339,6 +342,18 @@ fn addApplePackage(
     tar_package.step.dependOn(&build_xcframework.step);
     tar_package.step.dependOn(&copy_license.step);
     package_step.dependOn(&tar_package.step);
+
+    const zip_xcframework = sideEffectCommand(b, &.{
+        "ditto",
+        "-c",
+        "-k",
+        "--sequesterRsrc",
+        "--keepParent",
+        xcframework,
+        spm_archive,
+    });
+    zip_xcframework.step.dependOn(&build_xcframework.step);
+    package_step.dependOn(&zip_xcframework.step);
 }
 
 /// Build one Apple slice and add the modulemap next to the installed header.

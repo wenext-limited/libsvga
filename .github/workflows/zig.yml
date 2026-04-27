@@ -95,3 +95,26 @@ jobs:
         run: |
           count="$(find zig-out/ci-release -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')"
           test "$count" = "7"
+
+  apple-package-smoke:
+    name: Apple XCFramework package smoke test
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build Apple package
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
+        run: zig build package-release -Doptimize=ReleaseFast -Drelease-version=ci -Drelease-dir=zig-out/apple-ci-release
+
+      - name: Check SwiftPM XCFramework zip
+        run: |
+          test -f zig-out/apple-ci-release/libsvga-static-ci.xcframework.zip
+          unzip -l zig-out/apple-ci-release/libsvga-static-ci.xcframework.zip | grep 'libsvga-static.xcframework/Info.plist'

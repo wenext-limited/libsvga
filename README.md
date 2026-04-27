@@ -44,29 +44,31 @@ The build produces:
 - `zig-out/include/svga.h`
 - `zig-out/bin/svga_probe`
 
-`libsvga.a` currently uses zlib for SVGA inflate performance. Consumers that
-link the static library directly should also link `z`.
+By default, native desktop builds use the system zlib for SVGA inflate
+performance. Android, WASM, and release packages use libsvga's portable Zig
+inflate backend, so they do not need a target `libz` at link time.
 
 On Darwin targets, `zig build` re-archives the installed static library with
 Apple `ar` so SwiftPM/Xcode's linker accepts `zig-out/lib/libsvga.a`.
 
-## Apple XCFramework
+## Release Packages
 
-The Swift package consumes `libsvga` as a local static XCFramework. Regenerate
-the macOS and iOS artifact with:
+Build release archives with:
 
 ```sh
-tools/build_apple_xcframework.sh
+zig build package-release -Doptimize=ReleaseFast -Drelease-version=0.1.0
 ```
 
-By default the script writes:
+The package step produces:
 
-- `../SVGAPlayerSwift/Binaries/libsvga-static.xcframework`
+- Android static library tarballs
+- WASM static library tarballs
+- `libsvga-apple-xcframework-<version>.tar.gz`
+- `libsvga-static-<version>.xcframework.zip`
 
-The current artifact contains macOS `arm64`, iOS device `arm64`, and iOS
-simulator `arm64` slices. It is layered on top of the portable C ABI; Android
-and other consumers should keep using the raw Zig library/header outputs for
-their own platform packaging.
+The `.xcframework.zip` puts `libsvga-static.xcframework` at the zip root so
+SwiftPM can reference it with a binary target URL. The current XCFramework
+contains macOS `arm64`, iOS device `arm64`, and iOS simulator `arm64` slices.
 
 ## C ABI
 
