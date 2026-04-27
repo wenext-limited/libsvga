@@ -1,6 +1,5 @@
 module libsvga [system] {
     header "svga.h"
     link "svga"
-    link "z"
     export *
 }

@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
         bool,
         "system-zlib",
         "Use the target platform's libz instead of the portable Zig inflate backend",
-    ) orelse defaultUseSystemZlib(target.result);
+    ) orelse false;
     const build_probe = b.option(
         bool,
         "build-probe",
@@ -39,9 +39,9 @@ pub fn build(b: *std.Build) void {
         "Minimum iOS version used by the package-release Apple archive",
     ) orelse "15.0";
 
-    // Make the zlib backend choice visible to parser.zig at comptime. Android
-    // and WASM default to Zig's portable inflater so release artifacts do not
-    // depend on a target libz.
+    // Make the zlib backend choice visible to parser.zig at comptime. The
+    // default is Zig's portable inflater so release artifacts do not depend on
+    // a target libz.
     const options = b.addOptions();
     options.addOption(bool, "use_system_zlib", use_system_zlib);
 
@@ -118,14 +118,6 @@ fn isDarwin(os_tag: std.Target.Os.Tag) bool {
     return switch (os_tag) {
         .ios, .macos, .tvos, .visionos, .watchos => true,
         else => false,
-    };
-}
-
-fn defaultUseSystemZlib(target: std.Target) bool {
-    if (target.abi.isAndroid()) return false;
-    return switch (target.os.tag) {
-        .freestanding, .wasi, .emscripten => false,
-        else => true,
     };
 }
 

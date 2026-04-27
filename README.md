@@ -44,9 +44,9 @@ The build produces:
 - `zig-out/include/svga.h`
 - `zig-out/bin/svga_probe`
 
-By default, native desktop builds use the system zlib for SVGA inflate
-performance. Android, WASM, and release packages use libsvga's portable Zig
-inflate backend, so they do not need a target `libz` at link time.
+By default, builds use Zig's portable `std.compress.flate` inflater for SVGA
+zlib and ZIP/deflate payloads, so release artifacts do not need a target `libz`
+at link time. Pass `-Dsystem-zlib=true` to use the platform zlib instead.
 
 On Darwin targets, `zig build` re-archives the installed static library with
 Apple `ar` so SwiftPM/Xcode's linker accepts `zig-out/lib/libsvga.a`.

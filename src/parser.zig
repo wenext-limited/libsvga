@@ -1043,8 +1043,8 @@ fn isMp3Data(bytes: []const u8) bool {
 
 /// Inflate a standalone zlib stream.
 ///
-/// Targets without a reliable system libz use Zig's std.compress.flate backend,
-/// which is what makes Android and WASM release artifacts self-contained.
+/// The default build uses Zig's std.compress.flate backend so release artifacts
+/// stay self-contained. `-Dsystem-zlib=true` switches this path to libz.
 fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]u8 {
     if (!comptime build_options.use_system_zlib) {
         return inflateWithStdFlate(
