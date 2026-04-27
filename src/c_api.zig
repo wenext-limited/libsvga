@@ -64,6 +64,7 @@ pub const FrameInfo = model.FrameRecord;
 pub const RenderCommandInfo = model.RenderCommand;
 pub const RenderItemInfo = model.RenderItem;
 pub const RenderRangeInfo = model.RenderRange;
+pub const RenderCapabilitiesInfo = model.RenderCapabilities;
 pub const PathCommandInfo = model.PathCommand;
 
 pub const AssetInfo = extern struct {
@@ -665,6 +666,32 @@ export fn svga_movie_get_render_item_table(
     return statusCode(.ok);
 }
 
+export fn svga_movie_get_render_capabilities(
+    movie_handle: ?*const MovieHandle,
+    out_capabilities: ?*RenderCapabilitiesInfo,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const capabilities_out = out_capabilities orelse return statusCode(.null_argument);
+
+    capabilities_out.* = renderCapabilitiesForMovie(movieFromConstHandle(handle));
+    return statusCode(.ok);
+}
+
+export fn svga_movie_get_frame_render_capabilities(
+    movie_handle: ?*const MovieHandle,
+    frame_index: u32,
+    out_capabilities: ?*RenderCapabilitiesInfo,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const capabilities_out = out_capabilities orelse return statusCode(.null_argument);
+    const movie = movieFromConstHandle(handle);
+    const items = movie.renderItems(frame_index) orelse return statusCode(.invalid_argument);
+    const commands = movie.renderCommands(frame_index) orelse return statusCode(.invalid_argument);
+
+    capabilities_out.* = renderCapabilitiesForItems(items, commands.len);
+    return statusCode(.ok);
+}
+
 export fn svga_movie_get_visual_frame_table(
     movie_handle: ?*const MovieHandle,
     out_indices: ?*?[*]const u32,
@@ -780,6 +807,54 @@ fn movieFromHandle(handle: *MovieHandle) *model.Movie {
 
 fn movieFromConstHandle(handle: *const MovieHandle) *const model.Movie {
     return @as(*const model.Movie, @ptrCast(@alignCast(handle)));
+}
+
+fn renderCapabilitiesForMovie(movie: *const model.Movie) RenderCapabilitiesInfo {
+    var required_features: u32 = 0;
+    for (movie.render_items) |item| {
+        required_features |= renderFeaturesForItem(item);
+    }
+    if (movie.render_commands.len > 0) {
+        required_features |= @intFromEnum(model.RenderFeature.bitmap_quads);
+    }
+
+    return renderCapabilities(required_features, movie.render_commands.len);
+}
+
+fn renderCapabilitiesForItems(items: []const RenderItemInfo, command_count: usize) RenderCapabilitiesInfo {
+    var required_features: u32 = 0;
+    for (items) |item| {
+        required_features |= renderFeaturesForItem(item);
+    }
+    if (command_count > 0) {
+        required_features |= @intFromEnum(model.RenderFeature.bitmap_quads);
+    }
+
+    return renderCapabilities(required_features, command_count);
+}
+
+fn renderFeaturesForItem(item: RenderItemInfo) u32 {
+    var required_features: u32 = @intFromEnum(model.RenderFeature.bitmap_quads);
+    if (item.has_clip_path != 0) {
+        required_features |= @intFromEnum(model.RenderFeature.clip_paths);
+    }
+    if (item.is_matte != 0 or item.has_matte != 0) {
+        required_features |= @intFromEnum(model.RenderFeature.mattes);
+    }
+    if (item.has_shapes != 0) {
+        required_features |= @intFromEnum(model.RenderFeature.vector_shapes);
+    }
+    return required_features;
+}
+
+fn renderCapabilities(required_features: u32, command_count: usize) RenderCapabilitiesInfo {
+    const unsupported = required_features & ~@as(u32, @intFromEnum(model.RenderFeature.bitmap_quads));
+    return .{
+        .abi_version = abi_version,
+        .required_features = required_features,
+        .bitmap_command_count = @intCast(@min(command_count, @as(usize, std.math.maxInt(u32)))),
+        .direct_bitmap_compatible = if (unsupported == 0) 1 else 0,
+    };
 }
 
 test "C API creates and reads a movie handle" {
@@ -1058,6 +1133,97 @@ test "C API exposes parsed path commands" {
     try std.testing.expect(shape_ranges != null);
     try std.testing.expectEqual(@as(usize, 0), shape_ranges.?[0].start);
     try std.testing.expectEqual(@as(usize, 2), shape_ranges.?[0].count);
+}
+
+test "C API exposes render capabilities for bitmap and fallback frames" {
+    var movie = try model.Movie.init(std.testing.allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 100,
+        .view_box_height = 100,
+        .fps = 20,
+        .frames = 2,
+        .sprite_count = 2,
+        .sprites = &.{
+            .{
+                .image_key = "bitmap",
+                .frames = &.{
+                    .{
+                        .frame = .{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 20, .height = 20 },
+                            .visible = 1,
+                        },
+                    },
+                    .{
+                        .frame = .{
+                            .alpha = 1,
+                            .layout = .{ .x = 1, .y = 1, .width = 20, .height = 20 },
+                            .visible = 1,
+                        },
+                    },
+                },
+            },
+            .{
+                .image_key = "vector",
+                .frames = &.{
+                    .{
+                        .frame = .{
+                            .alpha = 0,
+                            .layout = .{ .x = 0, .y = 0, .width = 20, .height = 20 },
+                            .visible = 0,
+                        },
+                    },
+                    .{
+                        .frame = .{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 20, .height = 20 },
+                            .shape_count = 1,
+                            .first_shape_type = @intFromEnum(model.ShapeType.rect),
+                            .visible = 1,
+                        },
+                        .shapes = &.{
+                            .{
+                                .shape_type = .rect,
+                                .rect = .{ .x = 0, .y = 0, .width = 20, .height = 20 },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    });
+    defer movie.deinit(std.testing.allocator);
+
+    const handle = handleFromMovie(&movie);
+
+    var frame_zero: RenderCapabilitiesInfo = undefined;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_frame_render_capabilities(handle, 0, &frame_zero),
+    );
+    try std.testing.expectEqual(abi_version, frame_zero.abi_version);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(model.RenderFeature.bitmap_quads)), frame_zero.required_features);
+    try std.testing.expectEqual(@as(u32, 1), frame_zero.bitmap_command_count);
+    try std.testing.expectEqual(@as(u8, 1), frame_zero.direct_bitmap_compatible);
+
+    var frame_one: RenderCapabilitiesInfo = undefined;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_frame_render_capabilities(handle, 1, &frame_one),
+    );
+    try std.testing.expect(frame_one.required_features & @intFromEnum(model.RenderFeature.bitmap_quads) != 0);
+    try std.testing.expect(frame_one.required_features & @intFromEnum(model.RenderFeature.vector_shapes) != 0);
+    try std.testing.expectEqual(@as(u32, 2), frame_one.bitmap_command_count);
+    try std.testing.expectEqual(@as(u8, 0), frame_one.direct_bitmap_compatible);
+
+    var movie_caps: RenderCapabilitiesInfo = undefined;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_render_capabilities(handle, &movie_caps),
+    );
+    try std.testing.expect(movie_caps.required_features & @intFromEnum(model.RenderFeature.vector_shapes) != 0);
+    try std.testing.expectEqual(@as(u32, 3), movie_caps.bitmap_command_count);
+    try std.testing.expectEqual(@as(u8, 0), movie_caps.direct_bitmap_compatible);
 }
 
 fn storedZip(test_allocator: std.mem.Allocator, name: []const u8, data: []const u8) ![]u8 {

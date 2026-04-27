@@ -115,6 +115,20 @@ typedef struct svga_render_range {
 } svga_render_range_t;
 
 enum {
+    SVGA_RENDER_FEATURE_BITMAP_QUADS = 1u << 0,
+    SVGA_RENDER_FEATURE_CLIP_PATHS = 1u << 1,
+    SVGA_RENDER_FEATURE_MATTES = 1u << 2,
+    SVGA_RENDER_FEATURE_VECTOR_SHAPES = 1u << 3,
+};
+
+typedef struct svga_render_capabilities {
+    uint32_t abi_version;
+    uint32_t required_features;
+    uint32_t bitmap_command_count;
+    uint8_t direct_bitmap_compatible;
+} svga_render_capabilities_t;
+
+enum {
     SVGA_PATH_COMMAND_MOVE = 0,
     SVGA_PATH_COMMAND_LINE = 1,
     SVGA_PATH_COMMAND_QUAD = 2,
@@ -318,6 +332,15 @@ svga_status_t svga_movie_get_render_item_table(
     size_t *out_item_count,
     const svga_render_range_t **out_ranges,
     size_t *out_range_count
+);
+svga_status_t svga_movie_get_render_capabilities(
+    const svga_movie_t *movie,
+    svga_render_capabilities_t *out_capabilities
+);
+svga_status_t svga_movie_get_frame_render_capabilities(
+    const svga_movie_t *movie,
+    uint32_t frame_index,
+    svga_render_capabilities_t *out_capabilities
 );
 svga_status_t svga_movie_get_visual_frame_table(
     const svga_movie_t *movie,

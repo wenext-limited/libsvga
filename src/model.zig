@@ -207,6 +207,20 @@ pub const RenderRange = extern struct {
     count: usize = 0,
 };
 
+pub const RenderFeature = enum(u32) {
+    bitmap_quads = 1 << 0,
+    clip_paths = 1 << 1,
+    mattes = 1 << 2,
+    vector_shapes = 1 << 3,
+};
+
+pub const RenderCapabilities = extern struct {
+    abi_version: u32 = 0,
+    required_features: u32 = 0,
+    bitmap_command_count: u32 = 0,
+    direct_bitmap_compatible: u8 = 0,
+};
+
 pub const ShapeRecord = extern struct {
     shape_type: i32 = @intFromEnum(ShapeType.unknown),
     path_data_utf8: ?[*:0]const u8 = null,
