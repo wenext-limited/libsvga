@@ -49,6 +49,52 @@ pub const Rect = extern struct {
     height: f32,
 };
 
+pub const Size2D = extern struct {
+    width: f64,
+    height: f64,
+};
+
+pub const Point2D = extern struct {
+    x: f64,
+    y: f64,
+};
+
+pub const Rect2D = extern struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+};
+
+pub const MovieLayout = extern struct {
+    scale_x: f64,
+    scale_y: f64,
+    origin: Point2D,
+};
+
+pub const FrameRange = extern struct {
+    lower_bound: i32,
+    upper_bound: i32,
+};
+
+pub const PlaybackState = extern struct {
+    frame_count: i32,
+    fps: i32,
+    playback_range: FrameRange,
+    elapsed_seconds: f64,
+    playback_speed: f64,
+    start_frame_offset: i64,
+    loop_count: i64,
+    reverse: u8,
+    fill_mode: i32,
+};
+
+pub const PlaybackPosition = extern struct {
+    frame_index: i32,
+    completed_loop_count: i64,
+    did_finish: u8,
+};
+
 pub const Transform = extern struct {
     a: f32,
     b: f32,
@@ -120,6 +166,22 @@ pub const ShapeEllipse = extern struct {
 };
 
 pub const ShapeInfo = model.ShapeRecord;
+
+const ContentMode = enum(i32) {
+    fit = 0,
+    fill = 1,
+    scale_to_fill = 2,
+    top = 3,
+    bottom = 4,
+    left = 5,
+    right = 6,
+};
+
+const FillMode = enum(i32) {
+    current = 0,
+    backward = 1,
+    forward = 2,
+};
 
 export fn svga_abi_version() callconv(.c) u32 {
     return abi_version;
@@ -303,13 +365,55 @@ export fn svga_movie_get_asset_info(movie_handle: ?*const MovieHandle, asset_ind
     if (asset_index >= movie.assets.len) return statusCode(.invalid_argument);
 
     const asset = &movie.assets[asset_index];
-    info.* = .{
-        .key_utf8 = asset.key.ptr,
-        .kind = @intFromEnum(asset.kind),
-        .bytes = if (asset.bytes.len == 0) null else asset.bytes.ptr,
-        .byte_count = asset.bytes.len,
-        .filename_utf8 = asset.filename.ptr,
-    };
+    info.* = assetInfo(asset);
+    return statusCode(.ok);
+}
+
+export fn svga_movie_find_asset(
+    movie_handle: ?*const MovieHandle,
+    key_utf8: ?[*:0]const u8,
+    out_info: ?*AssetInfo,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const key_ptr = key_utf8 orelse return statusCode(.null_argument);
+    const info = out_info orelse return statusCode(.null_argument);
+    info.* = emptyAssetInfo();
+
+    const key = std.mem.span(key_ptr);
+    const asset = movieFromConstHandle(handle).assetByKey(key) orelse return statusCode(.invalid_argument);
+    info.* = assetInfo(asset);
+    return statusCode(.ok);
+}
+
+export fn svga_movie_resolve_image_asset(
+    movie_handle: ?*const MovieHandle,
+    image_key_utf8: ?[*:0]const u8,
+    out_info: ?*AssetInfo,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const key_ptr = image_key_utf8 orelse return statusCode(.null_argument);
+    const info = out_info orelse return statusCode(.null_argument);
+    info.* = emptyAssetInfo();
+
+    const key = std.mem.span(key_ptr);
+    const asset = movieFromConstHandle(handle).resolveImageAsset(key) orelse return statusCode(.invalid_argument);
+    info.* = assetInfo(asset);
+    return statusCode(.ok);
+}
+
+export fn svga_movie_resolve_audio_asset(
+    movie_handle: ?*const MovieHandle,
+    audio_key_utf8: ?[*:0]const u8,
+    out_info: ?*AssetInfo,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const key_ptr = audio_key_utf8 orelse return statusCode(.null_argument);
+    const info = out_info orelse return statusCode(.null_argument);
+    info.* = emptyAssetInfo();
+
+    const key = std.mem.span(key_ptr);
+    const asset = movieFromConstHandle(handle).resolveAudioAsset(key) orelse return statusCode(.invalid_argument);
+    info.* = assetInfo(asset);
     return statusCode(.ok);
 }
 
@@ -738,6 +842,161 @@ export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieH
     return statusCode(.ok);
 }
 
+export fn svga_frame_index_for_time(
+    frame_count: i32,
+    fps: i32,
+    playback_time_seconds: f64,
+    out_frame_index: ?*i32,
+    out_clamped_time_seconds: ?*f64,
+) callconv(.c) i32 {
+    const frame_index_out = out_frame_index orelse return statusCode(.null_argument);
+    const clamped_time_out = out_clamped_time_seconds orelse return statusCode(.null_argument);
+    frame_index_out.* = 0;
+    clamped_time_out.* = 0;
+
+    if (frame_count <= 0 or fps <= 0 or !std.math.isFinite(playback_time_seconds)) {
+        return statusCode(.invalid_argument);
+    }
+
+    const duration = @as(f64, @floatFromInt(frame_count)) / @as(f64, @floatFromInt(fps));
+    const clamped_time = @min(@max(playback_time_seconds, 0), duration);
+    const raw_frame = flooredNonNegativeI64(clamped_time * @as(f64, @floatFromInt(fps)));
+    const last_frame = @as(i64, frame_count - 1);
+
+    frame_index_out.* = @intCast(@min(raw_frame, last_frame));
+    clamped_time_out.* = clamped_time;
+    return statusCode(.ok);
+}
+
+export fn svga_presentation_time_for_frame(
+    frame_index: i32,
+    fps: i32,
+    out_presentation_time_seconds: ?*f64,
+) callconv(.c) i32 {
+    const time_out = out_presentation_time_seconds orelse return statusCode(.null_argument);
+    time_out.* = 0;
+    if (frame_index < 0 or fps <= 0) return statusCode(.invalid_argument);
+    time_out.* = @as(f64, @floatFromInt(frame_index)) / @as(f64, @floatFromInt(fps));
+    return statusCode(.ok);
+}
+
+export fn svga_clamp_frame_range(
+    range: FrameRange,
+    valid_range: FrameRange,
+    out_range: ?*FrameRange,
+) callconv(.c) i32 {
+    const range_out = out_range orelse return statusCode(.null_argument);
+    range_out.* = clampFrameRange(range, valid_range);
+    return statusCode(.ok);
+}
+
+export fn svga_frame_offset_for_frame(
+    frame_index: i32,
+    range: FrameRange,
+    reverse: u8,
+    out_offset: ?*i64,
+) callconv(.c) i32 {
+    const offset_out = out_offset orelse return statusCode(.null_argument);
+    offset_out.* = frameOffsetForFrame(frame_index, range, reverse != 0);
+    return statusCode(.ok);
+}
+
+export fn svga_frame_index_for_offset(
+    offset: i64,
+    range: FrameRange,
+    reverse: u8,
+    out_frame_index: ?*i32,
+) callconv(.c) i32 {
+    const frame_index_out = out_frame_index orelse return statusCode(.null_argument);
+    frame_index_out.* = frameIndexForOffset(offset, range, reverse != 0);
+    return statusCode(.ok);
+}
+
+export fn svga_finished_frame_index(
+    range: FrameRange,
+    reverse: u8,
+    fill_mode: i32,
+    out_frame_index: ?*i32,
+) callconv(.c) i32 {
+    const frame_index_out = out_frame_index orelse return statusCode(.null_argument);
+    const mode = fillModeFromCode(fill_mode) orelse return statusCode(.invalid_argument);
+    frame_index_out.* = finishedFrameIndex(range, reverse != 0, mode);
+    return statusCode(.ok);
+}
+
+export fn svga_playback_position(
+    state_ptr: ?*const PlaybackState,
+    out_position: ?*PlaybackPosition,
+) callconv(.c) i32 {
+    const state = state_ptr orelse return statusCode(.null_argument);
+    const position_out = out_position orelse return statusCode(.null_argument);
+    const mode = fillModeFromCode(state.fill_mode) orelse return statusCode(.invalid_argument);
+
+    position_out.* = .{
+        .frame_index = 0,
+        .completed_loop_count = 0,
+        .did_finish = 0,
+    };
+
+    if (state.frame_count <= 0 or state.fps <= 0) return statusCode(.invalid_argument);
+    if (!std.math.isFinite(state.elapsed_seconds) or !std.math.isFinite(state.playback_speed)) {
+        return statusCode(.invalid_argument);
+    }
+    if (!rangeWithinFrameCount(state.playback_range, state.frame_count)) {
+        return statusCode(.invalid_argument);
+    }
+
+    const effective_speed = @max(state.playback_speed, 0);
+    const elapsed_frames = flooredNonNegativeI64(
+        @max(state.elapsed_seconds, 0) *
+            @as(f64, @floatFromInt(state.fps)) *
+            effective_speed,
+    );
+    const start_offset = @max(state.start_frame_offset, 0);
+    const total_offset = saturatingAddI64(start_offset, elapsed_frames);
+    const range_frame_count = frameRangeCount(state.playback_range);
+    const next_completed_loops = @divTrunc(total_offset, range_frame_count);
+
+    if (state.loop_count > 0 and next_completed_loops >= state.loop_count) {
+        position_out.* = .{
+            .frame_index = finishedFrameIndex(state.playback_range, state.reverse != 0, mode),
+            .completed_loop_count = state.loop_count,
+            .did_finish = 1,
+        };
+        return statusCode(.ok);
+    }
+
+    const intra_loop_offset = @mod(total_offset, range_frame_count);
+    position_out.* = .{
+        .frame_index = frameIndexForOffset(intra_loop_offset, state.playback_range, state.reverse != 0),
+        .completed_loop_count = next_completed_loops,
+        .did_finish = 0,
+    };
+    return statusCode(.ok);
+}
+
+export fn svga_make_movie_layout(
+    movie_size: Size2D,
+    viewport_size: Size2D,
+    content_mode: i32,
+    out_layout: ?*MovieLayout,
+) callconv(.c) i32 {
+    const layout_out = out_layout orelse return statusCode(.null_argument);
+    const mode = contentModeFromCode(content_mode) orelse return statusCode(.invalid_argument);
+    layout_out.* = movieLayout(movie_size, viewport_size, mode);
+    return statusCode(.ok);
+}
+
+export fn svga_aspect_fit_rect(
+    content_size: Size2D,
+    bounds: Rect2D,
+    out_rect: ?*Rect2D,
+) callconv(.c) i32 {
+    const rect_out = out_rect orelse return statusCode(.null_argument);
+    rect_out.* = aspectFitRect(content_size, bounds);
+    return statusCode(.ok);
+}
+
 fn versionSlice(version_utf8: ?[*:0]const u8) []const u8 {
     const ptr = version_utf8 orelse return "";
     var len: usize = 0;
@@ -807,6 +1066,177 @@ fn movieFromHandle(handle: *MovieHandle) *model.Movie {
 
 fn movieFromConstHandle(handle: *const MovieHandle) *const model.Movie {
     return @as(*const model.Movie, @ptrCast(@alignCast(handle)));
+}
+
+fn emptyAssetInfo() AssetInfo {
+    return .{
+        .key_utf8 = null,
+        .kind = @intFromEnum(model.AssetKind.unknown),
+        .bytes = null,
+        .byte_count = 0,
+        .filename_utf8 = null,
+    };
+}
+
+fn assetInfo(asset: *const model.Asset) AssetInfo {
+    return .{
+        .key_utf8 = asset.key.ptr,
+        .kind = @intFromEnum(asset.kind),
+        .bytes = if (asset.bytes.len == 0) null else asset.bytes.ptr,
+        .byte_count = asset.bytes.len,
+        .filename_utf8 = asset.filename.ptr,
+    };
+}
+
+fn contentModeFromCode(code: i32) ?ContentMode {
+    return switch (code) {
+        @intFromEnum(ContentMode.fit) => .fit,
+        @intFromEnum(ContentMode.fill) => .fill,
+        @intFromEnum(ContentMode.scale_to_fill) => .scale_to_fill,
+        @intFromEnum(ContentMode.top) => .top,
+        @intFromEnum(ContentMode.bottom) => .bottom,
+        @intFromEnum(ContentMode.left) => .left,
+        @intFromEnum(ContentMode.right) => .right,
+        else => null,
+    };
+}
+
+fn fillModeFromCode(code: i32) ?FillMode {
+    return switch (code) {
+        @intFromEnum(FillMode.current) => .current,
+        @intFromEnum(FillMode.backward) => .backward,
+        @intFromEnum(FillMode.forward) => .forward,
+        else => null,
+    };
+}
+
+fn frameRangeCount(range: FrameRange) i64 {
+    return @max(@as(i64, range.upper_bound) - @as(i64, range.lower_bound), 0);
+}
+
+fn rangeWithinFrameCount(range: FrameRange, frame_count: i32) bool {
+    return range.lower_bound >= 0 and
+        range.upper_bound <= frame_count and
+        frameRangeCount(range) > 0;
+}
+
+fn clampFrameRange(range: FrameRange, valid_range: FrameRange) FrameRange {
+    const valid_count = frameRangeCount(valid_range);
+    if (valid_count <= 0) return .{ .lower_bound = 0, .upper_bound = 0 };
+
+    const lower = @max(range.lower_bound, valid_range.lower_bound);
+    const upper = @min(range.upper_bound, valid_range.upper_bound);
+    if (lower < upper) return .{ .lower_bound = lower, .upper_bound = upper };
+
+    return .{
+        .lower_bound = valid_range.lower_bound,
+        .upper_bound = valid_range.lower_bound,
+    };
+}
+
+fn frameOffsetForFrame(frame_index: i32, range: FrameRange, reverse: bool) i64 {
+    if (frameRangeCount(range) <= 0) return 0;
+    if (reverse) {
+        return @max(@as(i64, range.upper_bound) - 1 - @as(i64, frame_index), 0);
+    }
+    return @max(@as(i64, frame_index) - @as(i64, range.lower_bound), 0);
+}
+
+fn frameIndexForOffset(offset: i64, range: FrameRange, reverse: bool) i32 {
+    const count = frameRangeCount(range);
+    if (count <= 0) return 0;
+
+    const clamped_offset = @min(@max(offset, 0), count - 1);
+    if (reverse) {
+        return @intCast(@as(i64, range.upper_bound) - 1 - clamped_offset);
+    }
+    return @intCast(@as(i64, range.lower_bound) + clamped_offset);
+}
+
+fn finishedFrameIndex(range: FrameRange, reverse: bool, fill_mode: FillMode) i32 {
+    if (frameRangeCount(range) <= 0) return 0;
+    return switch (fill_mode) {
+        .current => if (reverse) range.lower_bound else range.upper_bound - 1,
+        .backward => range.lower_bound,
+        .forward => range.upper_bound - 1,
+    };
+}
+
+fn flooredNonNegativeI64(value: f64) i64 {
+    if (!std.math.isFinite(value) or value <= 0) return 0;
+
+    const floored = @floor(value);
+    const max_i64_float = @as(f64, @floatFromInt(std.math.maxInt(i64)));
+    if (floored >= max_i64_float) return std.math.maxInt(i64);
+    return @intFromFloat(floored);
+}
+
+fn saturatingAddI64(left: i64, right: i64) i64 {
+    if (right > std.math.maxInt(i64) - left) return std.math.maxInt(i64);
+    return left + right;
+}
+
+fn movieLayout(movie_size: Size2D, viewport_size: Size2D, content_mode: ContentMode) MovieLayout {
+    if (!(movie_size.width > 0) or
+        !(movie_size.height > 0) or
+        !(viewport_size.width > 0) or
+        !(viewport_size.height > 0))
+    {
+        return .{
+            .scale_x = 1,
+            .scale_y = 1,
+            .origin = .{ .x = 0, .y = 0 },
+        };
+    }
+
+    const scale_x = viewport_size.width / movie_size.width;
+    const scale_y = viewport_size.height / movie_size.height;
+    if (content_mode == .scale_to_fill) {
+        return .{
+            .scale_x = scale_x,
+            .scale_y = scale_y,
+            .origin = .{ .x = 0, .y = 0 },
+        };
+    }
+
+    const scale = switch (content_mode) {
+        .fill => @max(scale_x, scale_y),
+        .left, .right => scale_y,
+        .top, .bottom => scale_x,
+        .fit, .scale_to_fill => @min(scale_x, scale_y),
+    };
+    const rendered_width = movie_size.width * scale;
+    const rendered_height = movie_size.height * scale;
+    const origin = switch (content_mode) {
+        .top => Point2D{ .x = (viewport_size.width - rendered_width) / 2, .y = 0 },
+        .bottom => Point2D{ .x = (viewport_size.width - rendered_width) / 2, .y = viewport_size.height - rendered_height },
+        .left => Point2D{ .x = 0, .y = (viewport_size.height - rendered_height) / 2 },
+        .right => Point2D{ .x = viewport_size.width - rendered_width, .y = (viewport_size.height - rendered_height) / 2 },
+        .fit, .fill, .scale_to_fill => Point2D{
+            .x = (viewport_size.width - rendered_width) / 2,
+            .y = (viewport_size.height - rendered_height) / 2,
+        },
+    };
+
+    return .{
+        .scale_x = scale,
+        .scale_y = scale,
+        .origin = origin,
+    };
+}
+
+fn aspectFitRect(content_size: Size2D, bounds: Rect2D) Rect2D {
+    if (!(content_size.width > 0) or !(content_size.height > 0)) return bounds;
+
+    const scale = @min(bounds.width / content_size.width, bounds.height / content_size.height);
+    const width = content_size.width * scale;
+    const height = content_size.height * scale;
+    return .{
+        .x = bounds.x + bounds.width / 2 - width / 2,
+        .y = bounds.y + bounds.height / 2 - height / 2,
+        .width = width,
+        .height = height,
+    };
 }
 
 fn renderCapabilitiesForMovie(movie: *const model.Movie) RenderCapabilitiesInfo {
@@ -1032,6 +1462,165 @@ test "C API exposes parsed assets, audio, and shapes" {
     try std.testing.expect(visual_frames != null);
     try std.testing.expectEqual(@as(u32, 0), visual_frames.?[0]);
     try std.testing.expectEqual(@as(u32, 0), visual_frames.?[59]);
+}
+
+test "C API resolves filename assets through portable lookup policy" {
+    var movie = try model.Movie.init(std.testing.allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 100,
+        .view_box_height = 100,
+        .fps = 20,
+        .frames = 1,
+        .assets = &.{
+            .{
+                .key = "avatar",
+                .kind = .filename,
+                .filename = "avatar_image",
+            },
+            .{
+                .key = "avatar_image.png",
+                .kind = .image_bytes,
+                .bytes = "png-bytes",
+            },
+            .{
+                .key = "sound",
+                .kind = .filename,
+                .filename = "sound.mp3",
+            },
+            .{
+                .key = "sound.mp3",
+                .kind = .audio_bytes,
+                .bytes = "mp3-bytes",
+            },
+        },
+    });
+    defer movie.deinit(std.testing.allocator);
+
+    const handle = handleFromMovie(&movie);
+
+    var exact: AssetInfo = undefined;
+    try std.testing.expectEqual(statusCode(.ok), svga_movie_find_asset(handle, "avatar", &exact));
+    try std.testing.expectEqual(@intFromEnum(model.AssetKind.filename), exact.kind);
+    try std.testing.expectEqualStrings("avatar_image", std.mem.span(exact.filename_utf8.?));
+
+    var image: AssetInfo = undefined;
+    try std.testing.expectEqual(statusCode(.ok), svga_movie_resolve_image_asset(handle, "avatar", &image));
+    try std.testing.expectEqualStrings("avatar_image.png", std.mem.span(image.key_utf8.?));
+    try std.testing.expectEqualStrings("png-bytes", image.bytes.?[0..image.byte_count]);
+
+    var audio: AssetInfo = undefined;
+    try std.testing.expectEqual(statusCode(.ok), svga_movie_resolve_audio_asset(handle, "sound", &audio));
+    try std.testing.expectEqualStrings("sound.mp3", std.mem.span(audio.key_utf8.?));
+    try std.testing.expectEqualStrings("mp3-bytes", audio.bytes.?[0..audio.byte_count]);
+
+    var missing: AssetInfo = undefined;
+    try std.testing.expectEqual(statusCode(.invalid_argument), svga_movie_find_asset(handle, "missing", &missing));
+    try std.testing.expectEqual(@as(?[*:0]const u8, null), missing.key_utf8);
+}
+
+test "C API exposes timeline scalar helpers" {
+    var frame_index: i32 = -1;
+    var clamped_time: f64 = -1;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_frame_index_for_time(60, 30, -0.25, &frame_index, &clamped_time),
+    );
+    try std.testing.expectEqual(@as(i32, 0), frame_index);
+    try std.testing.expectEqual(@as(f64, 0), clamped_time);
+
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_frame_index_for_time(60, 30, 2.0, &frame_index, &clamped_time),
+    );
+    try std.testing.expectEqual(@as(i32, 59), frame_index);
+    try std.testing.expectEqual(@as(f64, 2), clamped_time);
+
+    var presentation_time: f64 = -1;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_presentation_time_for_frame(15, 30, &presentation_time),
+    );
+    try std.testing.expectEqual(@as(f64, 0.5), presentation_time);
+
+    var clamped_range: FrameRange = undefined;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_clamp_frame_range(
+            .{ .lower_bound = -5, .upper_bound = 8 },
+            .{ .lower_bound = 2, .upper_bound = 10 },
+            &clamped_range,
+        ),
+    );
+    try std.testing.expectEqual(@as(i32, 2), clamped_range.lower_bound);
+    try std.testing.expectEqual(@as(i32, 8), clamped_range.upper_bound);
+
+    var offset: i64 = -1;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_frame_offset_for_frame(8, .{ .lower_bound = 4, .upper_bound = 10 }, 1, &offset),
+    );
+    try std.testing.expectEqual(@as(i64, 1), offset);
+
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_frame_index_for_offset(2, .{ .lower_bound = 4, .upper_bound = 10 }, 1, &frame_index),
+    );
+    try std.testing.expectEqual(@as(i32, 7), frame_index);
+}
+
+test "C API computes playback position and layout geometry" {
+    var position: PlaybackPosition = undefined;
+    const state = PlaybackState{
+        .frame_count = 20,
+        .fps = 10,
+        .playback_range = .{ .lower_bound = 4, .upper_bound = 9 },
+        .elapsed_seconds = 0.2,
+        .playback_speed = 1,
+        .start_frame_offset = 4,
+        .loop_count = 2,
+        .reverse = 1,
+        .fill_mode = @intFromEnum(FillMode.current),
+    };
+    try std.testing.expectEqual(statusCode(.ok), svga_playback_position(&state, &position));
+    try std.testing.expectEqual(@as(i32, 7), position.frame_index);
+    try std.testing.expectEqual(@as(i64, 1), position.completed_loop_count);
+    try std.testing.expectEqual(@as(u8, 0), position.did_finish);
+
+    var finished = state;
+    finished.elapsed_seconds = 1;
+    try std.testing.expectEqual(statusCode(.ok), svga_playback_position(&finished, &position));
+    try std.testing.expectEqual(@as(i32, 4), position.frame_index);
+    try std.testing.expectEqual(@as(i64, 2), position.completed_loop_count);
+    try std.testing.expectEqual(@as(u8, 1), position.did_finish);
+
+    var layout: MovieLayout = undefined;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_make_movie_layout(
+            .{ .width = 100, .height = 50 },
+            .{ .width = 300, .height = 300 },
+            @intFromEnum(ContentMode.fit),
+            &layout,
+        ),
+    );
+    try std.testing.expectEqual(@as(f64, 3), layout.scale_x);
+    try std.testing.expectEqual(@as(f64, 3), layout.scale_y);
+    try std.testing.expectEqual(@as(f64, 0), layout.origin.x);
+    try std.testing.expectEqual(@as(f64, 75), layout.origin.y);
+
+    var rect: Rect2D = undefined;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_aspect_fit_rect(
+            .{ .width = 200, .height = 100 },
+            .{ .x = 10, .y = 20, .width = 100, .height = 100 },
+            &rect,
+        ),
+    );
+    try std.testing.expectEqual(@as(f64, 10), rect.x);
+    try std.testing.expectEqual(@as(f64, 45), rect.y);
+    try std.testing.expectEqual(@as(f64, 100), rect.width);
+    try std.testing.expectEqual(@as(f64, 50), rect.height);
 }
 
 test "C API exposes parsed path commands" {

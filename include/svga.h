@@ -59,6 +59,52 @@ typedef struct svga_rect {
     float height;
 } svga_rect_t;
 
+typedef struct svga_size2d {
+    double width;
+    double height;
+} svga_size2d_t;
+
+typedef struct svga_point2d {
+    double x;
+    double y;
+} svga_point2d_t;
+
+typedef struct svga_rect2d {
+    double x;
+    double y;
+    double width;
+    double height;
+} svga_rect2d_t;
+
+typedef struct svga_movie_layout {
+    double scale_x;
+    double scale_y;
+    svga_point2d_t origin;
+} svga_movie_layout_t;
+
+typedef struct svga_frame_range {
+    int32_t lower_bound;
+    int32_t upper_bound;
+} svga_frame_range_t;
+
+typedef struct svga_playback_state {
+    int32_t frame_count;
+    int32_t fps;
+    svga_frame_range_t playback_range;
+    double elapsed_seconds;
+    double playback_speed;
+    int64_t start_frame_offset;
+    int64_t loop_count;
+    uint8_t reverse;
+    int32_t fill_mode;
+} svga_playback_state_t;
+
+typedef struct svga_playback_position {
+    int32_t frame_index;
+    int64_t completed_loop_count;
+    uint8_t did_finish;
+} svga_playback_position_t;
+
 typedef struct svga_transform {
     float a;
     float b;
@@ -161,6 +207,22 @@ enum {
     SVGA_SHAPE_KEEP = 3,
 };
 
+enum {
+    SVGA_CONTENT_MODE_FIT = 0,
+    SVGA_CONTENT_MODE_FILL = 1,
+    SVGA_CONTENT_MODE_SCALE_TO_FILL = 2,
+    SVGA_CONTENT_MODE_TOP = 3,
+    SVGA_CONTENT_MODE_BOTTOM = 4,
+    SVGA_CONTENT_MODE_LEFT = 5,
+    SVGA_CONTENT_MODE_RIGHT = 6,
+};
+
+enum {
+    SVGA_FILL_MODE_CURRENT = 0,
+    SVGA_FILL_MODE_BACKWARD = 1,
+    SVGA_FILL_MODE_FORWARD = 2,
+};
+
 typedef struct svga_asset_info {
     const char *key_utf8;
     int32_t kind;
@@ -259,6 +321,21 @@ svga_status_t svga_movie_get_asset_info(
     uint32_t asset_index,
     svga_asset_info_t *out_info
 );
+svga_status_t svga_movie_find_asset(
+    const svga_movie_t *movie,
+    const char *key_utf8,
+    svga_asset_info_t *out_info
+);
+svga_status_t svga_movie_resolve_image_asset(
+    const svga_movie_t *movie,
+    const char *image_key_utf8,
+    svga_asset_info_t *out_info
+);
+svga_status_t svga_movie_resolve_audio_asset(
+    const svga_movie_t *movie,
+    const char *audio_key_utf8,
+    svga_asset_info_t *out_info
+);
 svga_status_t svga_movie_get_audio_info(
     const svga_movie_t *movie,
     uint32_t audio_index,
@@ -350,6 +427,57 @@ svga_status_t svga_movie_get_visual_frame_table(
 
 svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_movie_t **out_movie);
 svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_movie);
+
+svga_status_t svga_frame_index_for_time(
+    int32_t frame_count,
+    int32_t fps,
+    double playback_time_seconds,
+    int32_t *out_frame_index,
+    double *out_clamped_time_seconds
+);
+svga_status_t svga_presentation_time_for_frame(
+    int32_t frame_index,
+    int32_t fps,
+    double *out_presentation_time_seconds
+);
+svga_status_t svga_clamp_frame_range(
+    svga_frame_range_t range,
+    svga_frame_range_t valid_range,
+    svga_frame_range_t *out_range
+);
+svga_status_t svga_frame_offset_for_frame(
+    int32_t frame_index,
+    svga_frame_range_t range,
+    uint8_t reverse,
+    int64_t *out_offset
+);
+svga_status_t svga_frame_index_for_offset(
+    int64_t offset,
+    svga_frame_range_t range,
+    uint8_t reverse,
+    int32_t *out_frame_index
+);
+svga_status_t svga_finished_frame_index(
+    svga_frame_range_t range,
+    uint8_t reverse,
+    int32_t fill_mode,
+    int32_t *out_frame_index
+);
+svga_status_t svga_playback_position(
+    const svga_playback_state_t *state,
+    svga_playback_position_t *out_position
+);
+svga_status_t svga_make_movie_layout(
+    svga_size2d_t movie_size,
+    svga_size2d_t viewport_size,
+    int32_t content_mode,
+    svga_movie_layout_t *out_layout
+);
+svga_status_t svga_aspect_fit_rect(
+    svga_size2d_t content_size,
+    svga_rect2d_t bounds,
+    svga_rect2d_t *out_rect
+);
 
 /* Compatibility aliases for early Swift wrappers. */
 static inline svga_status_t svga_movie_decode(

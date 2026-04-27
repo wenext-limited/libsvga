@@ -449,6 +449,49 @@ pub const Movie = struct {
         if (frame_index >= self.visual_frame_indices.len) return null;
         return self.visual_frame_indices[frame_index];
     }
+
+    pub fn assetByKey(self: *const Movie, key: []const u8) ?*const Asset {
+        for (self.assets) |*asset| {
+            if (std.mem.eql(u8, asset.key, key)) return asset;
+        }
+        return null;
+    }
+
+    pub fn resolveImageAsset(self: *const Movie, image_key: []const u8) ?*const Asset {
+        const asset = self.assetByKey(image_key) orelse return null;
+        return self.resolveFilenameAsset(asset) orelse asset;
+    }
+
+    pub fn resolveAudioAsset(self: *const Movie, audio_key: []const u8) ?*const Asset {
+        const asset = self.assetByKey(audio_key) orelse return null;
+        if (asset.kind != .filename) return asset;
+        return self.resolveFilenameAsset(asset) orelse asset;
+    }
+
+    fn resolveFilenameAsset(self: *const Movie, asset: *const Asset) ?*const Asset {
+        if (asset.kind != .filename or asset.filename.len == 0) return null;
+        if (std.mem.endsWith(u8, asset.filename, ".png")) {
+            return self.assetByKeyWithBytes(asset.filename);
+        }
+
+        return self.assetByKeyWithAppendedPng(asset.filename) orelse
+            self.assetByKeyWithBytes(asset.filename);
+    }
+
+    fn assetByKeyWithBytes(self: *const Movie, key: []const u8) ?*const Asset {
+        const asset = self.assetByKey(key) orelse return null;
+        return if (asset.bytes.len > 0) asset else null;
+    }
+
+    fn assetByKeyWithAppendedPng(self: *const Movie, key_prefix: []const u8) ?*const Asset {
+        for (self.assets) |*asset| {
+            if (asset.key.len != key_prefix.len + 4) continue;
+            if (!std.mem.startsWith(u8, asset.key, key_prefix)) continue;
+            if (!std.mem.endsWith(u8, asset.key, ".png")) continue;
+            return if (asset.bytes.len > 0) asset else null;
+        }
+        return null;
+    }
 };
 
 pub const Asset = struct {

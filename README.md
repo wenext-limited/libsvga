@@ -21,6 +21,10 @@ movie and timeline data:
 - full vector shape records: path, rect, ellipse, keep, styles, and transform
 - precomputed frame visibility and transformed `nx`/`ny` minima
 - first-shape `keep` markers for vector frame caching
+- asset-key resolution helpers, including filename indirection and `.png`
+  fallback used by SVGA packages
+- scalar playback and layout helpers for frame/time mapping, loop ranges, and
+  viewport placement
 
 Bitmap decoding, audio playback, layer construction, and animation clocks remain
 platform/UI responsibilities.
@@ -120,6 +124,24 @@ svga_status_t svga_movie_get_asset_info(
     svga_asset_info_t *out_info
 );
 
+svga_status_t svga_movie_find_asset(
+    const svga_movie_t *movie,
+    const char *key_utf8,
+    svga_asset_info_t *out_info
+);
+
+svga_status_t svga_movie_resolve_image_asset(
+    const svga_movie_t *movie,
+    const char *image_key_utf8,
+    svga_asset_info_t *out_info
+);
+
+svga_status_t svga_movie_resolve_audio_asset(
+    const svga_movie_t *movie,
+    const char *audio_key_utf8,
+    svga_asset_info_t *out_info
+);
+
 svga_status_t svga_movie_get_audio_info(
     const svga_movie_t *movie,
     uint32_t audio_index,
@@ -142,6 +164,18 @@ movie handle and remain valid until `svga_movie_destroy`.
 `svga_movie_parse_file` reads local filesystem paths in Zig before parsing, so
 platform bindings do not need to materialize an intermediate byte buffer when
 they already have a file URL.
+
+Missing asset keys return `SVGA_STATUS_INVALID_ARGUMENT` and clear the output
+record. Resolved image/audio asset helpers preserve SVGAPlayerSwift's filename
+policy: exact key lookup first; filename assets resolve to `name.png` and then
+`name`, unless the filename already ends in `.png`.
+
+The C ABI also exposes platform-neutral scalar helpers for:
+
+- frame/time conversion
+- playback range clamping, reverse offsets, loop completion, and fill-frame
+  selection
+- movie-to-viewport layout and aspect-fit rectangles
 
 ## Probe Tool
 
@@ -171,6 +205,7 @@ SVGAPlayer-iOS parser on private fixtures. A recent `ITERATIONS=3` run:
 - protobuf and legacy JSON parsing
 - normalized movie, sprite, frame, shape, audio, and asset records
 - scalar frame/timeline lookup helpers
+- asset indirection policy and viewport layout math
 
 Platform layers should own:
 
