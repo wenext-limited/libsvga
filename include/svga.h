@@ -221,11 +221,23 @@ svga_status_t svga_movie_get_sprite_info(
     uint32_t sprite_index,
     svga_sprite_info_t *out_info
 );
+svga_status_t svga_movie_get_sprite_table(
+    const svga_movie_t *movie,
+    const svga_sprite_info_t **out_sprites,
+    size_t *out_count
+);
 svga_status_t svga_movie_get_frame_info(
     const svga_movie_t *movie,
     uint32_t sprite_index,
     uint32_t frame_index,
     svga_frame_info_t *out_info
+);
+svga_status_t svga_movie_get_frame_table(
+    const svga_movie_t *movie,
+    const svga_frame_info_t **out_frames,
+    size_t *out_frame_count,
+    const svga_render_range_t **out_ranges,
+    size_t *out_range_count
 );
 svga_status_t svga_movie_get_asset_count(const svga_movie_t *movie, uint32_t *out_count);
 svga_status_t svga_movie_get_asset_info(
@@ -245,12 +257,26 @@ svga_status_t svga_movie_get_shape_info(
     uint32_t shape_index,
     svga_shape_info_t *out_info
 );
+svga_status_t svga_movie_get_shape_table(
+    const svga_movie_t *movie,
+    const svga_shape_info_t **out_shapes,
+    size_t *out_shape_count,
+    const svga_render_range_t **out_ranges,
+    size_t *out_range_count
+);
 svga_status_t svga_movie_get_frame_clip_path_commands(
     const svga_movie_t *movie,
     uint32_t sprite_index,
     uint32_t frame_index,
     const svga_path_command_info_t **out_commands,
     size_t *out_count
+);
+svga_status_t svga_movie_get_frame_clip_path_command_table(
+    const svga_movie_t *movie,
+    const svga_path_command_info_t **out_commands,
+    size_t *out_command_count,
+    const svga_render_range_t **out_ranges,
+    size_t *out_range_count
 );
 svga_status_t svga_movie_get_shape_path_commands(
     const svga_movie_t *movie,
@@ -259,6 +285,13 @@ svga_status_t svga_movie_get_shape_path_commands(
     uint32_t shape_index,
     const svga_path_command_info_t **out_commands,
     size_t *out_count
+);
+svga_status_t svga_movie_get_shape_path_command_table(
+    const svga_movie_t *movie,
+    const svga_path_command_info_t **out_commands,
+    size_t *out_command_count,
+    const svga_render_range_t **out_ranges,
+    size_t *out_range_count
 );
 svga_status_t svga_movie_get_render_commands(
     const svga_movie_t *movie,

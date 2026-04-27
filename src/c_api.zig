@@ -58,26 +58,8 @@ pub const Transform = extern struct {
     ty: f32,
 };
 
-pub const SpriteInfo = extern struct {
-    image_key_utf8: ?[*:0]const u8,
-    matte_key_utf8: ?[*:0]const u8,
-    frame_count: u32,
-    is_matte: u8,
-    has_matte: u8,
-};
-
-pub const FrameInfo = extern struct {
-    alpha: f32,
-    layout: Rect,
-    transform: Transform,
-    nx: f32,
-    ny: f32,
-    shape_count: u32,
-    first_shape_type: i32,
-    visible: u8,
-    is_keep_frame: u8,
-    clip_path_utf8: ?[*:0]const u8,
-};
+pub const SpriteInfo = model.SpriteRecord;
+pub const FrameInfo = model.FrameRecord;
 
 pub const RenderCommandInfo = model.RenderCommand;
 pub const RenderItemInfo = model.RenderItem;
@@ -136,16 +118,7 @@ pub const ShapeEllipse = extern struct {
     radius_y: f32,
 };
 
-pub const ShapeInfo = extern struct {
-    shape_type: i32,
-    path_data_utf8: ?[*:0]const u8,
-    rect: ShapeRect,
-    ellipse: ShapeEllipse,
-    styles: ShapeStyle,
-    transform: Transform,
-    has_styles: u8,
-    has_transform: u8,
-};
+pub const ShapeInfo = model.ShapeRecord;
 
 export fn svga_abi_version() callconv(.c) u32 {
     return abi_version;
@@ -232,6 +205,26 @@ export fn svga_movie_get_sprite_info(movie_handle: ?*const MovieHandle, sprite_i
     return statusCode(.ok);
 }
 
+export fn svga_movie_get_sprite_table(
+    movie_handle: ?*const MovieHandle,
+    out_sprites: ?*?[*]const SpriteInfo,
+    out_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const sprites_out = out_sprites orelse return statusCode(.null_argument);
+    const count_out = out_count orelse return statusCode(.null_argument);
+
+    sprites_out.* = null;
+    count_out.* = 0;
+
+    const records = movieFromConstHandle(handle).metadata.sprite_records;
+    count_out.* = records.len;
+    if (records.len > 0) {
+        sprites_out.* = records.ptr;
+    }
+    return statusCode(.ok);
+}
+
 export fn svga_movie_get_frame_info(movie_handle: ?*const MovieHandle, sprite_index: u32, frame_index: u32, out_info: ?*FrameInfo) callconv(.c) i32 {
     const handle = movie_handle orelse return statusCode(.null_argument);
     const info = out_info orelse return statusCode(.null_argument);
@@ -262,6 +255,36 @@ export fn svga_movie_get_frame_info(movie_handle: ?*const MovieHandle, sprite_in
         .is_keep_frame = frame.is_keep_frame,
         .clip_path_utf8 = frame_info.clip_path.ptr,
     };
+    return statusCode(.ok);
+}
+
+export fn svga_movie_get_frame_table(
+    movie_handle: ?*const MovieHandle,
+    out_frames: ?*?[*]const FrameInfo,
+    out_frame_count: ?*usize,
+    out_ranges: ?*?[*]const RenderRangeInfo,
+    out_range_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const frames_out = out_frames orelse return statusCode(.null_argument);
+    const frame_count_out = out_frame_count orelse return statusCode(.null_argument);
+    const ranges_out = out_ranges orelse return statusCode(.null_argument);
+    const range_count_out = out_range_count orelse return statusCode(.null_argument);
+
+    frames_out.* = null;
+    frame_count_out.* = 0;
+    ranges_out.* = null;
+    range_count_out.* = 0;
+
+    const metadata = movieFromConstHandle(handle).metadata;
+    if (metadata.frame_records.len > 0) {
+        frames_out.* = metadata.frame_records.ptr;
+    }
+    frame_count_out.* = metadata.frame_records.len;
+    if (metadata.sprite_frame_ranges.len > 0) {
+        ranges_out.* = metadata.sprite_frame_ranges.ptr;
+    }
+    range_count_out.* = metadata.sprite_frame_ranges.len;
     return statusCode(.ok);
 }
 
@@ -376,6 +399,36 @@ export fn svga_movie_get_shape_info(
     return statusCode(.ok);
 }
 
+export fn svga_movie_get_shape_table(
+    movie_handle: ?*const MovieHandle,
+    out_shapes: ?*?[*]const ShapeInfo,
+    out_shape_count: ?*usize,
+    out_ranges: ?*?[*]const RenderRangeInfo,
+    out_range_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const shapes_out = out_shapes orelse return statusCode(.null_argument);
+    const shape_count_out = out_shape_count orelse return statusCode(.null_argument);
+    const ranges_out = out_ranges orelse return statusCode(.null_argument);
+    const range_count_out = out_range_count orelse return statusCode(.null_argument);
+
+    shapes_out.* = null;
+    shape_count_out.* = 0;
+    ranges_out.* = null;
+    range_count_out.* = 0;
+
+    const metadata = movieFromConstHandle(handle).metadata;
+    if (metadata.shape_records.len > 0) {
+        shapes_out.* = metadata.shape_records.ptr;
+    }
+    shape_count_out.* = metadata.shape_records.len;
+    if (metadata.frame_shape_ranges.len > 0) {
+        ranges_out.* = metadata.frame_shape_ranges.ptr;
+    }
+    range_count_out.* = metadata.frame_shape_ranges.len;
+    return statusCode(.ok);
+}
+
 export fn svga_movie_get_frame_clip_path_commands(
     movie_handle: ?*const MovieHandle,
     sprite_index: u32,
@@ -400,6 +453,36 @@ export fn svga_movie_get_frame_clip_path_commands(
     if (commands.len > 0) {
         commands_out.* = commands.ptr;
     }
+    return statusCode(.ok);
+}
+
+export fn svga_movie_get_frame_clip_path_command_table(
+    movie_handle: ?*const MovieHandle,
+    out_commands: ?*?[*]const PathCommandInfo,
+    out_command_count: ?*usize,
+    out_ranges: ?*?[*]const RenderRangeInfo,
+    out_range_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const commands_out = out_commands orelse return statusCode(.null_argument);
+    const command_count_out = out_command_count orelse return statusCode(.null_argument);
+    const ranges_out = out_ranges orelse return statusCode(.null_argument);
+    const range_count_out = out_range_count orelse return statusCode(.null_argument);
+
+    commands_out.* = null;
+    command_count_out.* = 0;
+    ranges_out.* = null;
+    range_count_out.* = 0;
+
+    const metadata = movieFromConstHandle(handle).metadata;
+    if (metadata.clip_path_commands.len > 0) {
+        commands_out.* = metadata.clip_path_commands.ptr;
+    }
+    command_count_out.* = metadata.clip_path_commands.len;
+    if (metadata.frame_clip_path_command_ranges.len > 0) {
+        ranges_out.* = metadata.frame_clip_path_command_ranges.ptr;
+    }
+    range_count_out.* = metadata.frame_clip_path_command_ranges.len;
     return statusCode(.ok);
 }
 
@@ -430,6 +513,36 @@ export fn svga_movie_get_shape_path_commands(
     if (commands.len > 0) {
         commands_out.* = commands.ptr;
     }
+    return statusCode(.ok);
+}
+
+export fn svga_movie_get_shape_path_command_table(
+    movie_handle: ?*const MovieHandle,
+    out_commands: ?*?[*]const PathCommandInfo,
+    out_command_count: ?*usize,
+    out_ranges: ?*?[*]const RenderRangeInfo,
+    out_range_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const commands_out = out_commands orelse return statusCode(.null_argument);
+    const command_count_out = out_command_count orelse return statusCode(.null_argument);
+    const ranges_out = out_ranges orelse return statusCode(.null_argument);
+    const range_count_out = out_range_count orelse return statusCode(.null_argument);
+
+    commands_out.* = null;
+    command_count_out.* = 0;
+    ranges_out.* = null;
+    range_count_out.* = 0;
+
+    const metadata = movieFromConstHandle(handle).metadata;
+    if (metadata.shape_path_commands.len > 0) {
+        commands_out.* = metadata.shape_path_commands.ptr;
+    }
+    command_count_out.* = metadata.shape_path_commands.len;
+    if (metadata.shape_path_command_ranges.len > 0) {
+        ranges_out.* = metadata.shape_path_command_ranges.ptr;
+    }
+    range_count_out.* = metadata.shape_path_command_ranges.len;
     return statusCode(.ok);
 }
 
@@ -699,10 +812,59 @@ test "C API exposes parsed assets, audio, and shapes" {
     try std.testing.expectEqualStrings("se", std.mem.span(audio_info.audio_key_utf8.?));
     try std.testing.expectEqual(@as(i32, 1), audio_info.start_frame);
 
+    var sprite_table: ?[*]const SpriteInfo = null;
+    var sprite_table_count: usize = 0;
+    try std.testing.expectEqual(statusCode(.ok), svga_movie_get_sprite_table(out_movie, &sprite_table, &sprite_table_count));
+    try std.testing.expectEqual(@as(usize, 1), sprite_table_count);
+    try std.testing.expect(sprite_table != null);
+    try std.testing.expectEqualStrings("hero", std.mem.span(sprite_table.?[0].image_key_utf8.?));
+
+    var frame_table: ?[*]const FrameInfo = null;
+    var frame_table_count: usize = 0;
+    var sprite_frame_ranges: ?[*]const RenderRangeInfo = null;
+    var sprite_frame_range_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_frame_table(
+            out_movie,
+            &frame_table,
+            &frame_table_count,
+            &sprite_frame_ranges,
+            &sprite_frame_range_count,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), frame_table_count);
+    try std.testing.expect(frame_table != null);
+    try std.testing.expectEqual(@as(usize, 1), sprite_frame_range_count);
+    try std.testing.expect(sprite_frame_ranges != null);
+    try std.testing.expectEqual(@as(usize, 0), sprite_frame_ranges.?[0].start);
+    try std.testing.expectEqual(@as(usize, 1), sprite_frame_ranges.?[0].count);
+
     var shape_info: ShapeInfo = undefined;
     try std.testing.expectEqual(statusCode(.ok), svga_movie_get_shape_info(out_movie, 0, 0, 0, &shape_info));
     try std.testing.expectEqual(@as(i32, @intFromEnum(model.ShapeType.rect)), shape_info.shape_type);
     try std.testing.expectEqual(@as(f32, 10), shape_info.rect.x);
+
+    var shape_table: ?[*]const ShapeInfo = null;
+    var shape_table_count: usize = 0;
+    var frame_shape_ranges: ?[*]const RenderRangeInfo = null;
+    var frame_shape_range_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_shape_table(
+            out_movie,
+            &shape_table,
+            &shape_table_count,
+            &frame_shape_ranges,
+            &frame_shape_range_count,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), shape_table_count);
+    try std.testing.expect(shape_table != null);
+    try std.testing.expectEqual(@as(usize, 1), frame_shape_range_count);
+    try std.testing.expect(frame_shape_ranges != null);
+    try std.testing.expectEqual(@as(usize, 0), frame_shape_ranges.?[0].start);
+    try std.testing.expectEqual(@as(usize, 1), frame_shape_ranges.?[0].count);
 
     var render_items: ?[*]const RenderItemInfo = null;
     var render_item_count: u32 = 0;
@@ -795,6 +957,27 @@ test "C API exposes parsed path commands" {
     try std.testing.expectEqual(@as(i32, @intFromEnum(model.PathCommandType.move)), clip_commands.?[0].command_type);
     try std.testing.expectEqual(@as(i32, @intFromEnum(model.PathCommandType.close)), clip_commands.?[2].command_type);
 
+    var clip_table: ?[*]const PathCommandInfo = null;
+    var clip_table_count: usize = 0;
+    var clip_ranges: ?[*]const RenderRangeInfo = null;
+    var clip_range_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_frame_clip_path_command_table(
+            handle,
+            &clip_table,
+            &clip_table_count,
+            &clip_ranges,
+            &clip_range_count,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 3), clip_table_count);
+    try std.testing.expect(clip_table != null);
+    try std.testing.expectEqual(@as(usize, 1), clip_range_count);
+    try std.testing.expect(clip_ranges != null);
+    try std.testing.expectEqual(@as(usize, 0), clip_ranges.?[0].start);
+    try std.testing.expectEqual(@as(usize, 3), clip_ranges.?[0].count);
+
     var shape_commands: ?[*]const PathCommandInfo = null;
     var shape_count: usize = 0;
     try std.testing.expectEqual(
@@ -806,6 +989,27 @@ test "C API exposes parsed path commands" {
     try std.testing.expectEqual(@as(i32, @intFromEnum(model.PathCommandType.cubic)), shape_commands.?[1].command_type);
     try std.testing.expectEqual(@as(f32, 7), shape_commands.?[1].p2_x);
     try std.testing.expectEqual(@as(f32, 8), shape_commands.?[1].p2_y);
+
+    var shape_table: ?[*]const PathCommandInfo = null;
+    var shape_table_count: usize = 0;
+    var shape_ranges: ?[*]const RenderRangeInfo = null;
+    var shape_range_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_shape_path_command_table(
+            handle,
+            &shape_table,
+            &shape_table_count,
+            &shape_ranges,
+            &shape_range_count,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 2), shape_table_count);
+    try std.testing.expect(shape_table != null);
+    try std.testing.expectEqual(@as(usize, 1), shape_range_count);
+    try std.testing.expect(shape_ranges != null);
+    try std.testing.expectEqual(@as(usize, 0), shape_ranges.?[0].start);
+    try std.testing.expectEqual(@as(usize, 2), shape_ranges.?[0].count);
 }
 
 fn storedZip(test_allocator: std.mem.Allocator, name: []const u8, data: []const u8) ![]u8 {

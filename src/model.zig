@@ -156,9 +156,30 @@ pub const SpriteInfo = struct {
     has_matte: bool,
 };
 
+pub const SpriteRecord = extern struct {
+    image_key_utf8: ?[*:0]const u8 = null,
+    matte_key_utf8: ?[*:0]const u8 = null,
+    frame_count: u32 = 0,
+    is_matte: u8 = 0,
+    has_matte: u8 = 0,
+};
+
 pub const FrameInfo = struct {
     frame: Frame,
     clip_path: [:0]const u8,
+};
+
+pub const FrameRecord = extern struct {
+    alpha: f32 = 0,
+    layout: Layout = .{},
+    transform: Transform = .{},
+    nx: f32 = 0,
+    ny: f32 = 0,
+    shape_count: u32 = 0,
+    first_shape_type: i32 = @intFromEnum(ShapeType.unknown),
+    visible: u8 = 0,
+    is_keep_frame: u8 = 0,
+    clip_path_utf8: ?[*:0]const u8 = null,
 };
 
 pub const RenderCommand = extern struct {
@@ -184,6 +205,41 @@ pub const RenderItem = extern struct {
 pub const RenderRange = extern struct {
     start: usize = 0,
     count: usize = 0,
+};
+
+pub const ShapeRecord = extern struct {
+    shape_type: i32 = @intFromEnum(ShapeType.unknown),
+    path_data_utf8: ?[*:0]const u8 = null,
+    rect: RectArgs = .{},
+    ellipse: EllipseArgs = .{},
+    styles: ShapeStyle = .{},
+    transform: Transform = .{},
+    has_styles: u8 = 0,
+    has_transform: u8 = 0,
+};
+
+pub const MetadataTables = struct {
+    sprite_records: []SpriteRecord,
+    frame_records: []FrameRecord,
+    sprite_frame_ranges: []RenderRange,
+    shape_records: []ShapeRecord,
+    frame_shape_ranges: []RenderRange,
+    clip_path_commands: []PathCommand,
+    frame_clip_path_command_ranges: []RenderRange,
+    shape_path_commands: []PathCommand,
+    shape_path_command_ranges: []RenderRange,
+
+    fn deinit(self: MetadataTables, allocator: std.mem.Allocator) void {
+        allocator.free(self.sprite_records);
+        allocator.free(self.frame_records);
+        allocator.free(self.sprite_frame_ranges);
+        allocator.free(self.shape_records);
+        allocator.free(self.frame_shape_ranges);
+        allocator.free(self.clip_path_commands);
+        allocator.free(self.frame_clip_path_command_ranges);
+        allocator.free(self.shape_path_commands);
+        allocator.free(self.shape_path_command_ranges);
+    }
 };
 
 const RenderData = struct {
@@ -222,6 +278,7 @@ pub const Movie = struct {
     assets: []Asset,
     sprites: []Sprite,
     audios: []Audio,
+    metadata: MetadataTables,
     render_commands: []RenderCommand,
     render_frame_ranges: []RenderRange,
     render_items: []RenderItem,
@@ -269,6 +326,9 @@ pub const Movie = struct {
             initialized_audios += 1;
         }
 
+        const metadata = try buildMetadataTables(allocator, sprites);
+        errdefer metadata.deinit(allocator);
+
         const render_data = try buildRenderData(allocator, sprites, spec.frames);
         errdefer render_data.deinit(allocator);
 
@@ -284,6 +344,7 @@ pub const Movie = struct {
             .assets = assets,
             .sprites = sprites,
             .audios = audios,
+            .metadata = metadata,
             .render_commands = render_data.commands,
             .render_frame_ranges = render_data.command_ranges,
             .render_items = render_data.items,
@@ -292,6 +353,7 @@ pub const Movie = struct {
     }
 
     pub fn deinit(self: *Movie, allocator: std.mem.Allocator) void {
+        self.metadata.deinit(allocator);
         allocator.free(self.render_commands);
         allocator.free(self.render_frame_ranges);
         allocator.free(self.render_items);
@@ -541,6 +603,143 @@ pub const Shape = struct {
         self.* = undefined;
     }
 };
+
+fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !MetadataTables {
+    var frame_total: usize = 0;
+    var shape_total: usize = 0;
+    var clip_path_command_total: usize = 0;
+    var shape_path_command_total: usize = 0;
+
+    for (sprites) |sprite| {
+        frame_total += sprite.frames.len;
+        for (sprite.frames) |frame| {
+            shape_total += frame.shapes.len;
+            clip_path_command_total += frame.clip_path_commands.len;
+            for (frame.shapes) |shape| {
+                shape_path_command_total += shape.path_commands.len;
+            }
+        }
+    }
+
+    var sprite_records = try allocator.alloc(SpriteRecord, sprites.len);
+    errdefer allocator.free(sprite_records);
+    var frame_records = try allocator.alloc(FrameRecord, frame_total);
+    errdefer allocator.free(frame_records);
+    var sprite_frame_ranges = try allocator.alloc(RenderRange, sprites.len);
+    errdefer allocator.free(sprite_frame_ranges);
+    var shape_records = try allocator.alloc(ShapeRecord, shape_total);
+    errdefer allocator.free(shape_records);
+    var frame_shape_ranges = try allocator.alloc(RenderRange, frame_total);
+    errdefer allocator.free(frame_shape_ranges);
+    var clip_path_commands = try allocator.alloc(PathCommand, clip_path_command_total);
+    errdefer allocator.free(clip_path_commands);
+    var frame_clip_path_command_ranges = try allocator.alloc(RenderRange, frame_total);
+    errdefer allocator.free(frame_clip_path_command_ranges);
+    var shape_path_commands = try allocator.alloc(PathCommand, shape_path_command_total);
+    errdefer allocator.free(shape_path_commands);
+    var shape_path_command_ranges = try allocator.alloc(RenderRange, shape_total);
+    errdefer allocator.free(shape_path_command_ranges);
+
+    var frame_index: usize = 0;
+    var shape_index: usize = 0;
+    var clip_path_command_index: usize = 0;
+    var shape_path_command_index: usize = 0;
+
+    for (sprites, 0..) |sprite, sprite_index| {
+        sprite_records[sprite_index] = spriteRecord(sprite);
+        sprite_frame_ranges[sprite_index] = .{
+            .start = frame_index,
+            .count = sprite.frames.len,
+        };
+
+        for (sprite.frames) |frame| {
+            frame_records[frame_index] = frameRecord(frame);
+            frame_shape_ranges[frame_index] = .{
+                .start = shape_index,
+                .count = frame.shapes.len,
+            };
+            frame_clip_path_command_ranges[frame_index] = .{
+                .start = clip_path_command_index,
+                .count = frame.clip_path_commands.len,
+            };
+            if (frame.clip_path_commands.len > 0) {
+                @memcpy(
+                    clip_path_commands[clip_path_command_index .. clip_path_command_index + frame.clip_path_commands.len],
+                    frame.clip_path_commands,
+                );
+                clip_path_command_index += frame.clip_path_commands.len;
+            }
+
+            for (frame.shapes) |shape| {
+                shape_records[shape_index] = shapeRecord(shape);
+                shape_path_command_ranges[shape_index] = .{
+                    .start = shape_path_command_index,
+                    .count = shape.path_commands.len,
+                };
+                if (shape.path_commands.len > 0) {
+                    @memcpy(
+                        shape_path_commands[shape_path_command_index .. shape_path_command_index + shape.path_commands.len],
+                        shape.path_commands,
+                    );
+                    shape_path_command_index += shape.path_commands.len;
+                }
+                shape_index += 1;
+            }
+
+            frame_index += 1;
+        }
+    }
+
+    return .{
+        .sprite_records = sprite_records,
+        .frame_records = frame_records,
+        .sprite_frame_ranges = sprite_frame_ranges,
+        .shape_records = shape_records,
+        .frame_shape_ranges = frame_shape_ranges,
+        .clip_path_commands = clip_path_commands,
+        .frame_clip_path_command_ranges = frame_clip_path_command_ranges,
+        .shape_path_commands = shape_path_commands,
+        .shape_path_command_ranges = shape_path_command_ranges,
+    };
+}
+
+fn spriteRecord(sprite: Sprite) SpriteRecord {
+    return .{
+        .image_key_utf8 = sprite.image_key.ptr,
+        .matte_key_utf8 = sprite.matte_key.ptr,
+        .frame_count = @intCast(sprite.frames.len),
+        .is_matte = if (sprite.isMatte()) 1 else 0,
+        .has_matte = if (sprite.matte_key.len > 0) 1 else 0,
+    };
+}
+
+fn frameRecord(frame: OwnedFrame) FrameRecord {
+    return .{
+        .alpha = frame.frame.alpha,
+        .layout = frame.frame.layout,
+        .transform = frame.frame.transform,
+        .nx = frame.frame.nx,
+        .ny = frame.frame.ny,
+        .shape_count = frame.frame.shape_count,
+        .first_shape_type = frame.frame.first_shape_type,
+        .visible = frame.frame.visible,
+        .is_keep_frame = frame.frame.is_keep_frame,
+        .clip_path_utf8 = frame.clip_path.ptr,
+    };
+}
+
+fn shapeRecord(shape: Shape) ShapeRecord {
+    return .{
+        .shape_type = @intFromEnum(shape.shape_type),
+        .path_data_utf8 = shape.path_data.ptr,
+        .rect = shape.rect,
+        .ellipse = shape.ellipse,
+        .styles = shape.styles,
+        .transform = shape.transform,
+        .has_styles = if (shape.has_styles) 1 else 0,
+        .has_transform = if (shape.has_transform) 1 else 0,
+    };
+}
 
 fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_count_value: i32) !RenderData {
     const frame_count: usize = @intCast(frame_count_value);
@@ -853,6 +1052,16 @@ test "movie owns parsed path commands for clips and path shapes" {
     try std.testing.expectEqual(@as(f32, 2), shape.path_commands[1].p0_y);
     try std.testing.expectEqual(@as(f32, 4), shape.path_commands[2].p0_x);
     try std.testing.expectEqual(@as(f32, 6), shape.path_commands[2].p0_y);
+
+    try std.testing.expectEqual(@as(usize, 1), movie.metadata.sprite_records.len);
+    try std.testing.expectEqual(@as(usize, 1), movie.metadata.frame_records.len);
+    try std.testing.expectEqual(@as(usize, 1), movie.metadata.shape_records.len);
+    try std.testing.expectEqual(@as(usize, 4), movie.metadata.clip_path_commands.len);
+    try std.testing.expectEqual(@as(usize, 4), movie.metadata.shape_path_commands.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.metadata.sprite_frame_ranges[0].start);
+    try std.testing.expectEqual(@as(usize, 1), movie.metadata.sprite_frame_ranges[0].count);
+    try std.testing.expectEqual(@as(usize, 0), movie.metadata.frame_shape_ranges[0].start);
+    try std.testing.expectEqual(@as(usize, 1), movie.metadata.frame_shape_ranges[0].count);
 }
 
 test "movie metadata accepts positive fps outside documented player values" {
