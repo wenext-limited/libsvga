@@ -109,6 +109,11 @@ typedef struct svga_render_item_info {
     uint8_t has_shapes;
 } svga_render_item_info_t;
 
+typedef struct svga_render_range {
+    size_t start;
+    size_t count;
+} svga_render_range_t;
+
 enum {
     SVGA_ASSET_UNKNOWN = 0,
     SVGA_ASSET_IMAGE_BYTES = 1,
@@ -233,6 +238,20 @@ svga_status_t svga_movie_get_render_items(
     uint32_t frame_index,
     const svga_render_item_info_t **out_items,
     uint32_t *out_count
+);
+svga_status_t svga_movie_get_render_command_table(
+    const svga_movie_t *movie,
+    const svga_render_command_info_t **out_commands,
+    size_t *out_command_count,
+    const svga_render_range_t **out_ranges,
+    size_t *out_range_count
+);
+svga_status_t svga_movie_get_render_item_table(
+    const svga_movie_t *movie,
+    const svga_render_item_info_t **out_items,
+    size_t *out_item_count,
+    const svga_render_range_t **out_ranges,
+    size_t *out_range_count
 );
 
 svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_movie_t **out_movie);

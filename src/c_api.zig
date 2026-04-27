@@ -81,6 +81,7 @@ pub const FrameInfo = extern struct {
 
 pub const RenderCommandInfo = model.RenderCommand;
 pub const RenderItemInfo = model.RenderItem;
+pub const RenderRangeInfo = model.RenderRange;
 
 pub const AssetInfo = extern struct {
     key_utf8: ?[*:0]const u8,
@@ -416,6 +417,66 @@ export fn svga_movie_get_render_items(
     return statusCode(.ok);
 }
 
+export fn svga_movie_get_render_command_table(
+    movie_handle: ?*const MovieHandle,
+    out_commands: ?*?[*]const RenderCommandInfo,
+    out_command_count: ?*usize,
+    out_ranges: ?*?[*]const RenderRangeInfo,
+    out_range_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const commands_out = out_commands orelse return statusCode(.null_argument);
+    const command_count_out = out_command_count orelse return statusCode(.null_argument);
+    const ranges_out = out_ranges orelse return statusCode(.null_argument);
+    const range_count_out = out_range_count orelse return statusCode(.null_argument);
+
+    commands_out.* = null;
+    command_count_out.* = 0;
+    ranges_out.* = null;
+    range_count_out.* = 0;
+
+    const movie = movieFromConstHandle(handle);
+    if (movie.render_commands.len > 0) {
+        commands_out.* = movie.render_commands.ptr;
+    }
+    command_count_out.* = movie.render_commands.len;
+    if (movie.render_frame_ranges.len > 0) {
+        ranges_out.* = movie.render_frame_ranges.ptr;
+    }
+    range_count_out.* = movie.render_frame_ranges.len;
+    return statusCode(.ok);
+}
+
+export fn svga_movie_get_render_item_table(
+    movie_handle: ?*const MovieHandle,
+    out_items: ?*?[*]const RenderItemInfo,
+    out_item_count: ?*usize,
+    out_ranges: ?*?[*]const RenderRangeInfo,
+    out_range_count: ?*usize,
+) callconv(.c) i32 {
+    const handle = movie_handle orelse return statusCode(.null_argument);
+    const items_out = out_items orelse return statusCode(.null_argument);
+    const item_count_out = out_item_count orelse return statusCode(.null_argument);
+    const ranges_out = out_ranges orelse return statusCode(.null_argument);
+    const range_count_out = out_range_count orelse return statusCode(.null_argument);
+
+    items_out.* = null;
+    item_count_out.* = 0;
+    ranges_out.* = null;
+    range_count_out.* = 0;
+
+    const movie = movieFromConstHandle(handle);
+    if (movie.render_items.len > 0) {
+        items_out.* = movie.render_items.ptr;
+    }
+    item_count_out.* = movie.render_items.len;
+    if (movie.render_item_frame_ranges.len > 0) {
+        ranges_out.* = movie.render_item_frame_ranges.ptr;
+    }
+    range_count_out.* = movie.render_item_frame_ranges.len;
+    return statusCode(.ok);
+}
+
 export fn svga_movie_parse(bytes: ?[*]const u8, byte_count: usize, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
     const out = out_movie orelse return statusCode(.null_argument);
     out.* = null;
@@ -590,6 +651,44 @@ test "C API exposes parsed assets, audio, and shapes" {
     try std.testing.expectEqual(statusCode(.ok), svga_movie_get_render_items(out_movie, 0, &render_items, &render_item_count));
     try std.testing.expectEqual(@as(u32, 0), render_item_count);
     try std.testing.expect(render_items == null);
+
+    var command_table: ?[*]const RenderCommandInfo = null;
+    var command_count: usize = 999;
+    var command_ranges: ?[*]const RenderRangeInfo = null;
+    var command_range_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_render_command_table(
+            out_movie,
+            &command_table,
+            &command_count,
+            &command_ranges,
+            &command_range_count,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), command_count);
+    try std.testing.expect(command_table == null);
+    try std.testing.expectEqual(@as(usize, 60), command_range_count);
+    try std.testing.expect(command_ranges != null);
+
+    var item_table: ?[*]const RenderItemInfo = null;
+    var item_count: usize = 999;
+    var item_ranges: ?[*]const RenderRangeInfo = null;
+    var item_range_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_render_item_table(
+            out_movie,
+            &item_table,
+            &item_count,
+            &item_ranges,
+            &item_range_count,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), item_count);
+    try std.testing.expect(item_table == null);
+    try std.testing.expectEqual(@as(usize, 60), item_range_count);
+    try std.testing.expect(item_ranges != null);
 }
 
 fn storedZip(test_allocator: std.mem.Allocator, name: []const u8, data: []const u8) ![]u8 {

@@ -177,16 +177,16 @@ pub const RenderItem = extern struct {
     has_shapes: u8 = 0,
 };
 
-const RenderCommandRange = struct {
+pub const RenderRange = extern struct {
     start: usize = 0,
     count: usize = 0,
 };
 
 const RenderData = struct {
     commands: []RenderCommand,
-    command_ranges: []RenderCommandRange,
+    command_ranges: []RenderRange,
     items: []RenderItem,
-    item_ranges: []RenderCommandRange,
+    item_ranges: []RenderRange,
 
     fn deinit(self: RenderData, allocator: std.mem.Allocator) void {
         allocator.free(self.commands);
@@ -219,9 +219,9 @@ pub const Movie = struct {
     sprites: []Sprite,
     audios: []Audio,
     render_commands: []RenderCommand,
-    render_frame_ranges: []RenderCommandRange,
+    render_frame_ranges: []RenderRange,
     render_items: []RenderItem,
-    render_item_frame_ranges: []RenderCommandRange,
+    render_item_frame_ranges: []RenderRange,
 
     pub fn init(allocator: std.mem.Allocator, spec: MovieSpec) !Movie {
         try validateSpec(spec);
@@ -547,9 +547,9 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
         }
     }
 
-    var command_ranges = try allocator.alloc(RenderCommandRange, frame_count);
+    var command_ranges = try allocator.alloc(RenderRange, frame_count);
     errdefer allocator.free(command_ranges);
-    var item_ranges = try allocator.alloc(RenderCommandRange, frame_count);
+    var item_ranges = try allocator.alloc(RenderRange, frame_count);
     errdefer allocator.free(item_ranges);
 
     var command_total: usize = 0;
