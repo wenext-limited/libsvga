@@ -1,5 +1,5 @@
 const std = @import("std");
-const parser = @import("libsvga").parser;
+const libsvga = @import("libsvga");
 
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
@@ -16,34 +16,27 @@ pub fn main() !void {
 
     while (args.next()) |path| {
         saw_path = true;
-        const bytes = std.fs.cwd().readFileAlloc(allocator, path, 256 * 1024 * 1024) catch |err| {
-            fail_count += 1;
-            std.debug.print("{s}: read failed: {s}\n", .{ path, @errorName(err) });
-            continue;
-        };
-        defer allocator.free(bytes);
-
-        var metadata = parser.parseMovieMetadata(allocator, bytes) catch |err| {
+        const movie = libsvga.parseMovieFile(allocator, path, .{}) catch |err| {
             fail_count += 1;
             std.debug.print("{s}: parse failed: {s}\n", .{ path, @errorName(err) });
             continue;
         };
-        defer metadata.deinit(allocator);
+        defer libsvga.destroyMovie(allocator, movie);
 
         ok_count += 1;
-        const spec = metadata.spec;
+        const info = movie.info();
         std.debug.print(
             "{s}: {s} {d}x{d} fps={} frames={} images={} sprites={} audios={}\n",
             .{
                 path,
-                spec.version,
-                spec.view_box_width,
-                spec.view_box_height,
-                spec.fps,
-                spec.frames,
-                spec.image_count,
-                spec.sprite_count,
-                spec.audio_count,
+                info.version,
+                info.view_box_width,
+                info.view_box_height,
+                info.fps,
+                info.frames,
+                info.image_count,
+                info.sprite_count,
+                info.audio_count,
             },
         );
     }

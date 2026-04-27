@@ -66,7 +66,16 @@ their own platform packaging.
 
 ## C ABI
 
-The public ABI is declared in `include/svga.h`.
+Zig consumers should import the package module and use the native core API:
+
+```zig
+const libsvga = @import("libsvga");
+
+const movie = try libsvga.parseMovieFile(allocator, path, .{});
+defer libsvga.destroyMovie(allocator, movie);
+```
+
+The public C ABI is declared in `include/svga.h`.
 
 The core API uses opaque handles and explicit ownership:
 

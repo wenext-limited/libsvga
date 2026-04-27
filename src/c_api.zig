@@ -1,6 +1,6 @@
 const std = @import("std");
+const core = @import("core.zig");
 const model = @import("model.zig");
-const parser = @import("parser.zig");
 
 pub const abi_version: u32 = 1;
 
@@ -17,7 +17,6 @@ pub const Status = enum(i32) {
 
 const MovieHandle = opaque {};
 const allocator = std.heap.smp_allocator;
-const max_input_bytes = 256 * 1024 * 1024;
 
 pub const MovieDesc = extern struct {
     abi_version: u32,
@@ -193,8 +192,7 @@ export fn svga_movie_create(out_movie: ?*?*MovieHandle, desc: ?*const MovieDesc)
 export fn svga_movie_destroy(movie_handle: ?*MovieHandle) callconv(.c) void {
     const handle = movie_handle orelse return;
     const movie = movieFromHandle(handle);
-    movie.deinit(allocator);
-    allocator.destroy(movie);
+    core.destroyMovie(allocator, movie);
 }
 
 export fn svga_movie_get_info(movie_handle: ?*const MovieHandle, out_info: ?*MovieInfo) callconv(.c) i32 {
@@ -404,7 +402,9 @@ export fn svga_movie_parse(bytes: ?[*]const u8, byte_count: usize, out_movie: ?*
     if (byte_count == 0) return statusCode(.invalid_argument);
 
     const input = bytes.?[0..byte_count];
-    return parseMovieBytes(input, out);
+    const movie = core.parseMovie(allocator, input) catch |err| return statusCode(statusFromError(err));
+    out.* = handleFromMovie(movie);
+    return statusCode(.ok);
 }
 
 export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
@@ -415,23 +415,7 @@ export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieH
     const path = std.mem.span(path_ptr);
     if (path.len == 0) return statusCode(.invalid_argument);
 
-    const input = std.fs.cwd().readFileAlloc(allocator, path, max_input_bytes) catch |err| return statusCode(statusFromError(err));
-    defer allocator.free(input);
-    if (input.len == 0) return statusCode(.invalid_argument);
-
-    return parseMovieBytes(input, out);
-}
-
-fn parseMovieBytes(input: []const u8, out: *?*MovieHandle) i32 {
-    var parsed = parser.parseMovieMetadata(allocator, input) catch |err| return statusCode(statusFromError(err));
-    defer parsed.deinit(allocator);
-
-    const movie = allocator.create(model.Movie) catch return statusCode(.out_of_memory);
-    movie.* = model.Movie.init(allocator, parsed.spec) catch |err| {
-        allocator.destroy(movie);
-        return statusCode(statusFromError(err));
-    };
-
+    const movie = core.parseMovieFile(allocator, path, .{}) catch |err| return statusCode(statusFromError(err));
     out.* = handleFromMovie(movie);
     return statusCode(.ok);
 }
