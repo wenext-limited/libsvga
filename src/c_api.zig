@@ -35,7 +35,7 @@ const has_filesystem = switch (builtin.target.os.tag) {
 };
 
 const has_network = switch (builtin.target.os.tag) {
-    .freestanding, .emscripten => false,
+    .freestanding, .wasi, .emscripten => false,
     else => true,
 };
 

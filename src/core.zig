@@ -6,7 +6,7 @@ const parser = @import("parser.zig");
 pub const default_max_input_bytes: usize = 256 * 1024 * 1024;
 
 const has_network = switch (builtin.target.os.tag) {
-    .freestanding, .emscripten => false,
+    .freestanding, .wasi, .emscripten => false,
     else => true,
 };
 

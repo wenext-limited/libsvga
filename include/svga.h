@@ -880,8 +880,8 @@ svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_mo
  *
  * This is a convenience API for the direct URL -> bytes -> parser path. It
  * does not write the response to disk, and it does not implement filesystem
- * cache policy. Some targets, such as freestanding WASM and Emscripten builds,
- * do not expose network access through this ABI and return
+ * cache policy. Some targets, such as WASI, freestanding WASM, and Emscripten
+ * builds, do not expose network access through this ABI and return
  * SVGA_STATUS_UNSUPPORTED.
  *
  * @param url_utf8 NUL-terminated UTF-8 http/https URL. Must not be NULL or empty.
