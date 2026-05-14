@@ -2,16 +2,19 @@
 set -eu
 
 archive="$1"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/libsvga-rearchive.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 if command -v xcrun >/dev/null 2>&1; then
     ar_tool="$(xcrun --find ar)"
     libtool="$(xcrun --find libtool)"
     ranlib_tool="$(xcrun --find ranlib)"
+    python_tool="$(xcrun --find python3)"
 else
     ar_tool="/usr/bin/ar"
     libtool="/usr/bin/libtool"
     ranlib_tool="/usr/bin/ranlib"
+    python_tool="/usr/bin/python3"
 fi
 
 cd "$tmp_dir"
@@ -28,3 +31,4 @@ done
 # Older cctools can still leave the symbol table too short; ranlib rewrites it
 # with padding that keeps following 64-bit Mach-O members 8-byte aligned.
 "$ranlib_tool" "$archive"
+"$python_tool" "$script_dir/align_macho_archive.py" "$archive"
