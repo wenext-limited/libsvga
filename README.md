@@ -49,7 +49,7 @@ zlib and ZIP/deflate payloads, so release artifacts do not need a target `libz`
 at link time. Pass `-Dsystem-zlib=true` to use the platform zlib instead.
 
 On Darwin targets, `zig build` re-archives the installed static library with
-Apple `ar` so SwiftPM/Xcode's linker accepts `zig-out/lib/libsvga.a`.
+Apple `libtool` so SwiftPM/Xcode's linker accepts `zig-out/lib/libsvga.a`.
 
 ## Release Packages
 
