@@ -51,6 +51,8 @@ at link time. Pass `-Dsystem-zlib=true` to use the platform zlib instead.
 On Darwin targets, `zig build` re-archives the installed static library with
 Apple `libtool`/`ranlib` so SwiftPM/Xcode's linker accepts
 `zig-out/lib/libsvga.a`.
+The Apple release package step repeats that re-archive immediately before
+creating the XCFramework and verifies 64-bit Mach-O archive member alignment.
 
 ## Release Packages
 
