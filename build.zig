@@ -371,12 +371,27 @@ fn addAppleSlice(
     });
     build_slice.step.dependOn(parent_step);
 
+    const library = b.pathJoin(&.{ prefix, "lib", "libsvga.a" });
+    const rearchive_library = sideEffectCommand(b, &.{
+        "sh",
+        "tools/rearchive_macos.sh",
+        library,
+    });
+    rearchive_library.step.dependOn(&build_slice.step);
+
+    const verify_library = sideEffectCommand(b, &.{
+        "python3",
+        "tools/verify_macho_archive_alignment.py",
+        library,
+    });
+    verify_library.step.dependOn(&rearchive_library.step);
+
     const copy_modulemap = sideEffectCommand(b, &.{
         "cp",
         "include/module.modulemap",
         b.pathJoin(&.{ prefix, "include", "module.modulemap" }),
     });
-    copy_modulemap.step.dependOn(&build_slice.step);
+    copy_modulemap.step.dependOn(&verify_library.step);
 
     return &copy_modulemap.step;
 }
