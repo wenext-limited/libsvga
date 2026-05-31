@@ -559,6 +559,7 @@ fn parseCentralDirectoryEntries(
     var entries: std.ArrayList(ZipEntry) = .empty;
     var index = eocd.directory_offset;
     const directory_end = eocd.directory_offset + eocd.directory_size;
+    var remaining_output_bytes = options.max_output_bytes;
 
     while (index < directory_end) {
         if (directory_end - index < 46) return error.TruncatedInput;
@@ -591,8 +592,8 @@ fn parseCentralDirectoryEntries(
         const name = try allocator.dupe(u8, bytes[name_start .. name_start + name_len]);
         const compressed = bytes[data_start..data_end];
         const data = switch (method) {
-            0 => try allocator.dupe(u8, compressed),
-            8 => try inflateRawDeflate(allocator, compressed, uncompressed_size, options.max_output_bytes),
+            0 => try copyStoredZipData(allocator, compressed, &remaining_output_bytes),
+            8 => try inflateZipDeflate(allocator, compressed, uncompressed_size, &remaining_output_bytes),
             else => return error.UnsupportedZipMethod,
         };
 
@@ -607,6 +608,7 @@ fn parseLocalZipEntries(allocator: std.mem.Allocator, bytes: []const u8, options
     var entries: std.ArrayList(ZipEntry) = .empty;
     var index: usize = 0;
     var saw_local_header = false;
+    var remaining_output_bytes = options.max_output_bytes;
 
     while (bytes.len - index >= 4) {
         const signature = std.mem.readInt(u32, bytes[index..][0..4], .little);
@@ -640,8 +642,8 @@ fn parseLocalZipEntries(allocator: std.mem.Allocator, bytes: []const u8, options
         const name = try allocator.dupe(u8, bytes[name_start .. name_start + name_len]);
         const compressed = bytes[data_start..data_end];
         const data = switch (method) {
-            0 => try allocator.dupe(u8, compressed),
-            8 => try inflateRawDeflate(allocator, compressed, uncompressed_size, options.max_output_bytes),
+            0 => try copyStoredZipData(allocator, compressed, &remaining_output_bytes),
+            8 => try inflateZipDeflate(allocator, compressed, uncompressed_size, &remaining_output_bytes),
             else => return error.UnsupportedZipMethod,
         };
 
@@ -685,6 +687,28 @@ fn normalizedZipName(name: []const u8) []const u8 {
 
 fn checkedAdd(left: usize, right: anytype) ParseError!usize {
     return std.math.add(usize, left, @as(usize, @intCast(right))) catch error.TruncatedInput;
+}
+
+fn copyStoredZipData(allocator: std.mem.Allocator, bytes: []const u8, remaining_output_bytes: *usize) ParseError![]u8 {
+    try consumeZipOutput(bytes.len, remaining_output_bytes);
+    return allocator.dupe(u8, bytes);
+}
+
+fn inflateZipDeflate(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    expected_size: u32,
+    remaining_output_bytes: *usize,
+) ParseError![]u8 {
+    const data = try inflateRawDeflate(allocator, bytes, expected_size, remaining_output_bytes.*);
+    errdefer allocator.free(data);
+    try consumeZipOutput(data.len, remaining_output_bytes);
+    return data;
+}
+
+fn consumeZipOutput(byte_count: usize, remaining_output_bytes: *usize) ParseError!void {
+    if (byte_count > remaining_output_bytes.*) return error.StreamTooLong;
+    remaining_output_bytes.* -= byte_count;
 }
 
 /// Inflate raw deflate streams stored inside ZIP file entries.
@@ -1273,6 +1297,27 @@ test "metadata parser rejects zlib output above configured limit" {
     );
 }
 
+test "metadata parser applies output limit across all zip entries" {
+    const proto = [_]u8{
+        0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
+        0x12, 0x0e, 0x0d, 0x00, 0x00, 0xa0, 0x43,
+        0x15, 0x00, 0x00, 0x70, 0x43, 0x18, 0x1e,
+        0x20, 0x3c,
+    };
+
+    var zip: std.ArrayList(u8) = .empty;
+    defer zip.deinit(std.testing.allocator);
+    try appendStoredZipEntry(std.testing.allocator, &zip, "movie.binary", &proto);
+    try appendStoredZipEntry(std.testing.allocator, &zip, "image.png", "data");
+
+    try std.testing.expectError(
+        error.StreamTooLong,
+        parseMovieMetadataWithOptions(std.testing.allocator, zip.items, .{
+            .max_output_bytes = proto.len + 3,
+        }),
+    );
+}
+
 test "metadata parser rejects central directory offsets outside input" {
     var zip = [_]u8{0} ** (46 + 22);
 
@@ -1367,4 +1412,25 @@ fn storedZlib(test_allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     std.mem.writeInt(u32, bytes.items[7 + data.len ..][0..4], std.hash.Adler32.hash(data), .big);
 
     return bytes.toOwnedSlice(test_allocator);
+}
+
+fn appendStoredZipEntry(
+    test_allocator: std.mem.Allocator,
+    bytes: *std.ArrayList(u8),
+    name: []const u8,
+    data: []const u8,
+) !void {
+    if (name.len > std.math.maxInt(u16) or data.len > std.math.maxInt(u32)) return error.StreamTooLong;
+
+    const start = bytes.items.len;
+    try bytes.resize(test_allocator, start + 30 + name.len + data.len);
+    const entry = bytes.items[start..];
+    @memset(entry, 0);
+
+    std.mem.writeInt(u32, entry[0..4], 0x04034b50, .little);
+    std.mem.writeInt(u32, entry[18..22], @intCast(data.len), .little);
+    std.mem.writeInt(u32, entry[22..26], @intCast(data.len), .little);
+    std.mem.writeInt(u16, entry[26..28], @intCast(name.len), .little);
+    @memcpy(entry[30 .. 30 + name.len], name);
+    @memcpy(entry[30 + name.len ..], data);
 }
