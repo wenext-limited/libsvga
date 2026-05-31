@@ -3,6 +3,13 @@ const builtin = @import("builtin");
 const svg_path = @import("svg_path.zig");
 
 pub const max_version_bytes = 255;
+pub const max_asset_count = 4096;
+pub const max_sprite_count = 4096;
+pub const max_audio_count = 4096;
+pub const max_movie_frame_count = 10_000;
+pub const max_total_sprite_frames = 100_000;
+pub const max_total_shapes = 100_000;
+pub const max_total_path_commands = 1_000_000;
 
 /// Borrowed movie description produced by the parser before ownership is moved
 /// into Movie. Slices in this struct are valid as long as the parser arena lives.
@@ -284,6 +291,8 @@ pub const ValidationError = error{
     InvalidMovieCounts,
     InvalidSpriteKey,
     InvalidFrameCount,
+    InvalidShapeCount,
+    InvalidPathCommandCount,
 };
 
 pub const Movie = struct {
@@ -698,8 +707,10 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
 
     for (sprites) |sprite| {
         frame_total = std.math.add(usize, frame_total, sprite.frames.len) catch return error.InvalidFrameCount;
+        if (frame_total > max_total_sprite_frames) return error.InvalidFrameCount;
         for (sprite.frames) |frame| {
-            shape_total = std.math.add(usize, shape_total, frame.shapes.len) catch return error.InvalidFrameCount;
+            shape_total = std.math.add(usize, shape_total, frame.shapes.len) catch return error.InvalidShapeCount;
+            if (shape_total > max_total_shapes) return error.InvalidShapeCount;
         }
     }
 
@@ -744,7 +755,7 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
             const clip_path_command_count = count: {
                 const parsed_clip_path_commands = try svg_path.parse(allocator, frame.clip_path);
                 defer allocator.free(parsed_clip_path_commands);
-                try clip_path_commands.appendSlice(allocator, parsed_clip_path_commands);
+                try appendPathCommands(allocator, &clip_path_commands, parsed_clip_path_commands);
                 break :count parsed_clip_path_commands.len;
             };
             frame_clip_path_command_ranges[frame_index] = .{
@@ -760,7 +771,7 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
                     if (shape.shape_type != .shape) break :count 0;
                     const parsed_shape_path_commands = try svg_path.parse(allocator, shape.path_data);
                     defer allocator.free(parsed_shape_path_commands);
-                    try shape_path_commands.appendSlice(allocator, parsed_shape_path_commands);
+                    try appendPathCommands(allocator, &shape_path_commands, parsed_shape_path_commands);
                     break :count parsed_shape_path_commands.len;
                 };
                 shape_path_command_ranges[shape_index] = .{
@@ -790,6 +801,17 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
         .shape_path_commands = shape_path_command_slice,
         .shape_path_command_ranges = shape_path_command_ranges,
     };
+}
+
+fn appendPathCommands(
+    allocator: std.mem.Allocator,
+    commands: *std.ArrayList(PathCommand),
+    additional_commands: []const PathCommand,
+) !void {
+    if (additional_commands.len > max_total_path_commands) return error.InvalidPathCommandCount;
+    const next_count = std.math.add(usize, commands.items.len, additional_commands.len) catch return error.InvalidPathCommandCount;
+    if (next_count > max_total_path_commands) return error.InvalidPathCommandCount;
+    try commands.appendSlice(allocator, additional_commands);
 }
 
 fn spriteRecord(sprite: Sprite) SpriteRecord {
@@ -865,7 +887,7 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
             .start = command_total,
             .count = count,
         };
-        command_total += count;
+        command_total = std.math.add(usize, command_total, count) catch return error.InvalidFrameCount;
     }
     var item_total: usize = 0;
     for (item_counts, 0..) |count, frame_index| {
@@ -873,7 +895,7 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
             .start = item_total,
             .count = count,
         };
-        item_total += count;
+        item_total = std.math.add(usize, item_total, count) catch return error.InvalidFrameCount;
     }
 
     var commands = try allocator.alloc(RenderCommand, command_total);
@@ -1040,18 +1062,24 @@ pub fn validateSpec(spec: MovieSpec) ValidationError!void {
     }
 
     if (spec.fps <= 0) return error.InvalidFps;
-    if (spec.frames <= 0) return error.InvalidFrames;
+    if (spec.frames <= 0 or spec.frames > max_movie_frame_count) return error.InvalidFrames;
     if (spec.sprites.len != 0 and spec.sprite_count != spec.sprites.len) return error.InvalidMovieCounts;
-    if (spec.sprites.len > std.math.maxInt(u32)) return error.InvalidMovieCounts;
-    if (spec.assets.len > std.math.maxInt(u32)) return error.InvalidMovieCounts;
-    if (spec.audios.len > std.math.maxInt(u32)) return error.InvalidMovieCounts;
+    if (spec.sprite_count > max_sprite_count) return error.InvalidMovieCounts;
+    if (spec.image_count > max_asset_count) return error.InvalidMovieCounts;
+    if (spec.audio_count > max_audio_count) return error.InvalidMovieCounts;
+    if (spec.sprites.len > max_sprite_count) return error.InvalidMovieCounts;
+    if (spec.assets.len > max_asset_count) return error.InvalidMovieCounts;
+    if (spec.audios.len > max_audio_count) return error.InvalidMovieCounts;
     var total_frame_count: usize = 0;
     var total_shape_count: usize = 0;
     for (spec.sprites) |sprite| {
-        if (sprite.frames.len > std.math.maxInt(u32)) return error.InvalidFrameCount;
+        if (sprite.frames.len > max_total_sprite_frames) return error.InvalidFrameCount;
         total_frame_count = std.math.add(usize, total_frame_count, sprite.frames.len) catch return error.InvalidFrameCount;
+        if (total_frame_count > max_total_sprite_frames) return error.InvalidFrameCount;
         for (sprite.frames) |frame| {
-            total_shape_count = std.math.add(usize, total_shape_count, frame.shapes.len) catch return error.InvalidFrameCount;
+            if (frame.shapes.len > max_total_shapes) return error.InvalidShapeCount;
+            total_shape_count = std.math.add(usize, total_shape_count, frame.shapes.len) catch return error.InvalidShapeCount;
+            if (total_shape_count > max_total_shapes) return error.InvalidShapeCount;
         }
     }
 }
