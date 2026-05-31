@@ -179,9 +179,10 @@ movie handle and remain valid until `svga_movie_destroy`.
 platform bindings do not need to materialize an intermediate byte buffer when
 they already have a file URL.
 `svga_movie_download` downloads an HTTP/HTTPS response into a bounded memory
-buffer and then calls the same byte parser. It does not write the response to
-disk; platform layers should still own cache policy, custom headers, and
-session/authentication behavior.
+buffer and then calls the same byte parser. Compressed zlib and ZIP payloads are
+also inflated under a bounded output limit. The downloader does not write the
+response to disk; platform layers should still own cache policy, custom headers,
+and session/authentication behavior.
 
 Missing asset keys return `SVGA_STATUS_INVALID_ARGUMENT` and clear the output
 record. Resolved image/audio asset helpers preserve SVGAPlayerSwift's filename

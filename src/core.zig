@@ -4,6 +4,12 @@ const model = @import("model.zig");
 const parser = @import("parser.zig");
 
 pub const default_max_input_bytes: usize = 256 * 1024 * 1024;
+pub const default_max_output_bytes: usize = parser.default_max_output_bytes;
+
+/// Parser memory limits. `max_output_bytes` caps decompressed zlib/ZIP payloads.
+pub const ParseOptions = struct {
+    max_output_bytes: usize = default_max_output_bytes,
+};
 
 const has_network = switch (builtin.target.os.tag) {
     .freestanding, .wasi, .emscripten => false,
@@ -14,12 +20,14 @@ const has_network = switch (builtin.target.os.tag) {
 /// production SVGA files while still preventing accidental unbounded reads.
 pub const ParseFileOptions = struct {
     max_input_bytes: usize = default_max_input_bytes,
+    max_output_bytes: usize = default_max_output_bytes,
 };
 
 /// Download parser limits. The default matches ParseFileOptions so every
 /// byte-source convenience API has the same memory ceiling.
 pub const DownloadOptions = struct {
     max_input_bytes: usize = default_max_input_bytes,
+    max_output_bytes: usize = default_max_output_bytes,
 };
 
 /// Parse SVGA bytes into an owned, immutable Movie.
@@ -28,7 +36,14 @@ pub const DownloadOptions = struct {
 /// allocator. Supported inputs are ZIP SVGA packages and zlib-compressed
 /// movie.binary payloads.
 pub fn parseMovie(allocator: std.mem.Allocator, bytes: []const u8) !*model.Movie {
-    var parsed = try parser.parseMovieMetadata(allocator, bytes);
+    return parseMovieWithOptions(allocator, bytes, .{});
+}
+
+/// Parse SVGA bytes with explicit parser limits.
+pub fn parseMovieWithOptions(allocator: std.mem.Allocator, bytes: []const u8, options: ParseOptions) !*model.Movie {
+    var parsed = try parser.parseMovieMetadataWithOptions(allocator, bytes, .{
+        .max_output_bytes = options.max_output_bytes,
+    });
     defer parsed.deinit(allocator);
 
     const movie = try allocator.create(model.Movie);
@@ -47,7 +62,9 @@ pub fn parseMovieFile(
     const input = try std.fs.cwd().readFileAlloc(allocator, path, options.max_input_bytes);
     defer allocator.free(input);
 
-    return parseMovie(allocator, input);
+    return parseMovieWithOptions(allocator, input, .{
+        .max_output_bytes = options.max_output_bytes,
+    });
 }
 
 /// Download SVGA bytes into memory and parse them without touching disk.
@@ -63,7 +80,9 @@ pub fn downloadMovie(
     const input = try downloadBytes(allocator, url, options);
     defer allocator.free(input);
 
-    return parseMovie(allocator, input);
+    return parseMovieWithOptions(allocator, input, .{
+        .max_output_bytes = options.max_output_bytes,
+    });
 }
 
 /// Download URL bytes into an owned buffer. The caller owns the returned slice.

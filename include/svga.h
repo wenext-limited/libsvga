@@ -858,7 +858,7 @@ svga_status_t svga_movie_get_visual_frame_table(
  * @param bytes Pointer to SVGA bytes. Must not be NULL when byte_count is non-zero.
  * @param byte_count Number of bytes available at bytes. Must be greater than zero.
  * @param out_movie Receives a new movie handle on success. Must not be NULL.
- * @return SVGA_STATUS_OK on success, otherwise parse, validation, or allocation status.
+ * @return SVGA_STATUS_OK on success, otherwise parse, limit, validation, or allocation status.
  */
 svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_movie_t **out_movie);
 
@@ -871,7 +871,7 @@ svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_mov
  *
  * @param path_utf8 NUL-terminated UTF-8 path to an SVGA file. Must not be NULL or empty.
  * @param out_movie Receives a new movie handle on success. Must not be NULL.
- * @return SVGA_STATUS_OK on success, otherwise IO, parse, validation, or unsupported status.
+ * @return SVGA_STATUS_OK on success, otherwise IO, parse, limit, validation, or unsupported status.
  */
 svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_movie);
 
@@ -887,7 +887,7 @@ svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_mo
  * @param url_utf8 NUL-terminated UTF-8 http/https URL. Must not be NULL or empty.
  * @param options Optional download limits. May be NULL for defaults.
  * @param out_movie Receives a new movie handle on success. Must not be NULL.
- * @return SVGA_STATUS_OK on success, otherwise network, parse, validation, or unsupported status.
+ * @return SVGA_STATUS_OK on success, otherwise network, parse, limit, validation, or unsupported status.
  */
 svga_status_t svga_movie_download(
     const char *url_utf8,

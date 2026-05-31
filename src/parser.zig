@@ -11,6 +11,7 @@ pub const ParseError = error{
     UnsupportedContainer,
     UnsupportedZip,
     UnsupportedZipMethod,
+    StreamTooLong,
     InvalidData,
     InvalidWireType,
     TruncatedInput,
@@ -20,6 +21,12 @@ pub const ParseError = error{
     MissingMovieSpec,
     InvalidJson,
 } || std.mem.Allocator.Error;
+
+pub const default_max_output_bytes: usize = 256 * 1024 * 1024;
+
+pub const ParseOptions = struct {
+    max_output_bytes: usize = default_max_output_bytes,
+};
 
 const WireType = enum(u3) {
     varint = 0,
@@ -60,20 +67,29 @@ pub const MovieMetadata = struct {
 /// The returned spec borrows memory from MovieMetadata.arena, so callers should
 /// construct their owned model before calling MovieMetadata.deinit().
 pub fn parseMovieMetadata(allocator: std.mem.Allocator, bytes: []const u8) ParseError!MovieMetadata {
+    return parseMovieMetadataWithOptions(allocator, bytes, .{});
+}
+
+pub fn parseMovieMetadataWithOptions(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    options: ParseOptions,
+) ParseError!MovieMetadata {
     if (bytes.len < 2) return error.InvalidData;
+    if (options.max_output_bytes == 0) return error.StreamTooLong;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
     if (isZip(bytes)) {
         return .{
-            .spec = try parseZipPackage(arena.allocator(), bytes),
+            .spec = try parseZipPackage(arena.allocator(), bytes, options),
             .arena = arena,
         };
     }
     if (!isZlibStream(bytes)) return error.InvalidData;
 
-    const inflated = try inflateZlib(allocator, bytes);
+    const inflated = try inflateZlib(allocator, bytes, options.max_output_bytes);
     defer allocator.free(inflated);
 
     return .{
@@ -461,8 +477,8 @@ fn readInt32(reader: *ProtoReader, wire_type: WireType) ParseError!i32 {
     return @intCast(raw);
 }
 
-fn parseZipPackage(allocator: std.mem.Allocator, bytes: []const u8) ParseError!model.MovieSpec {
-    const entries = try parseZipEntries(allocator, bytes);
+fn parseZipPackage(allocator: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!model.MovieSpec {
+    const entries = try parseZipEntries(allocator, bytes, options);
     var movie_binary: ?[]const u8 = null;
     var movie_spec: ?[]const u8 = null;
 
@@ -495,12 +511,12 @@ const ZipEntry = struct {
 ///
 /// Normal packages have a central directory. Some fixtures or hand-built files
 /// only contain local headers, so the parser keeps a local-header fallback.
-fn parseZipEntries(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]ZipEntry {
+fn parseZipEntries(allocator: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError![]ZipEntry {
     if (findEndOfCentralDirectory(bytes)) |eocd| {
-        return parseCentralDirectoryEntries(allocator, bytes, eocd);
+        return parseCentralDirectoryEntries(allocator, bytes, eocd, options);
     }
 
-    return parseLocalZipEntries(allocator, bytes);
+    return parseLocalZipEntries(allocator, bytes, options);
 }
 
 const EndOfCentralDirectory = struct {
@@ -535,6 +551,7 @@ fn parseCentralDirectoryEntries(
     allocator: std.mem.Allocator,
     bytes: []const u8,
     eocd: EndOfCentralDirectory,
+    options: ParseOptions,
 ) ParseError![]ZipEntry {
     if (eocd.directory_offset > bytes.len) return error.TruncatedInput;
     if (eocd.directory_size > bytes.len - eocd.directory_offset) return error.TruncatedInput;
@@ -575,7 +592,7 @@ fn parseCentralDirectoryEntries(
         const compressed = bytes[data_start..data_end];
         const data = switch (method) {
             0 => try allocator.dupe(u8, compressed),
-            8 => try inflateRawDeflate(allocator, compressed, uncompressed_size),
+            8 => try inflateRawDeflate(allocator, compressed, uncompressed_size, options.max_output_bytes),
             else => return error.UnsupportedZipMethod,
         };
 
@@ -586,7 +603,7 @@ fn parseCentralDirectoryEntries(
     return entries.toOwnedSlice(allocator);
 }
 
-fn parseLocalZipEntries(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]ZipEntry {
+fn parseLocalZipEntries(allocator: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError![]ZipEntry {
     var entries: std.ArrayList(ZipEntry) = .empty;
     var index: usize = 0;
     var saw_local_header = false;
@@ -624,7 +641,7 @@ fn parseLocalZipEntries(allocator: std.mem.Allocator, bytes: []const u8) ParseEr
         const compressed = bytes[data_start..data_end];
         const data = switch (method) {
             0 => try allocator.dupe(u8, compressed),
-            8 => try inflateRawDeflate(allocator, compressed, uncompressed_size),
+            8 => try inflateRawDeflate(allocator, compressed, uncompressed_size, options.max_output_bytes),
             else => return error.UnsupportedZipMethod,
         };
 
@@ -667,13 +684,20 @@ fn normalizedZipName(name: []const u8) []const u8 {
 }
 
 /// Inflate raw deflate streams stored inside ZIP file entries.
-fn inflateRawDeflate(allocator: std.mem.Allocator, bytes: []const u8, expected_size: u32) ParseError![]u8 {
+fn inflateRawDeflate(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    expected_size: u32,
+    max_output_bytes: usize,
+) ParseError![]u8 {
+    if (expected_size > max_output_bytes) return error.StreamTooLong;
+
     if (!comptime build_options.use_system_zlib) {
         return inflateWithStdFlate(
             allocator,
             bytes,
             .raw,
-            if (expected_size > 0) @intCast(expected_size) else @max(bytes.len * 3 + 4096, 4096),
+            max_output_bytes,
             error.InvalidDeflateStream,
         );
     }
@@ -682,6 +706,7 @@ fn inflateRawDeflate(allocator: std.mem.Allocator, bytes: []const u8, expected_s
     errdefer output.deinit(allocator);
 
     var stream: zlib.z_stream = std.mem.zeroes(zlib.z_stream);
+    if (bytes.len > std.math.maxInt(@TypeOf(stream.avail_in))) return error.StreamTooLong;
     stream.next_in = @constCast(bytes.ptr);
     stream.avail_in = @intCast(bytes.len);
 
@@ -690,13 +715,15 @@ fn inflateRawDeflate(allocator: std.mem.Allocator, bytes: []const u8, expected_s
     }
     defer _ = zlib.inflateEnd(&stream);
 
-    const initial_capacity: usize = if (expected_size > 0) @intCast(expected_size) else @max(bytes.len * 3 + 4096, 4096);
+    const allocation_limit = inflateAllocationLimit(max_output_bytes);
+    const initial_capacity = @min(initialInflateCapacity(bytes.len, expected_size, max_output_bytes), allocation_limit);
     try output.resize(allocator, initial_capacity);
 
     while (true) {
         const total_out: usize = @intCast(stream.total_out);
         if (total_out == output.items.len) {
-            try output.resize(allocator, output.items.len * 2);
+            if (output.items.len >= allocation_limit) return error.StreamTooLong;
+            try output.resize(allocator, nextInflateCapacity(output.items.len, allocation_limit));
         }
         stream.next_out = output.items.ptr + total_out;
         stream.avail_out = @intCast(output.items.len - total_out);
@@ -704,6 +731,7 @@ fn inflateRawDeflate(allocator: std.mem.Allocator, bytes: []const u8, expected_s
         const status = zlib.inflate(&stream, zlib.Z_NO_FLUSH);
         switch (status) {
             zlib.Z_STREAM_END => {
+                if (stream.total_out > max_output_bytes) return error.StreamTooLong;
                 try output.resize(allocator, @intCast(stream.total_out));
                 return output.toOwnedSlice(allocator);
             },
@@ -1045,13 +1073,13 @@ fn isMp3Data(bytes: []const u8) bool {
 ///
 /// The default build uses Zig's std.compress.flate backend so release artifacts
 /// stay self-contained. `-Dsystem-zlib=true` switches this path to libz.
-fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]u8 {
+fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8, max_output_bytes: usize) ParseError![]u8 {
     if (!comptime build_options.use_system_zlib) {
         return inflateWithStdFlate(
             allocator,
             bytes,
             .zlib,
-            @max(bytes.len * 3 + 4096, 4096),
+            max_output_bytes,
             error.InvalidZlibStream,
         );
     }
@@ -1060,6 +1088,7 @@ fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]u8 
     errdefer output.deinit(allocator);
 
     var stream: zlib.z_stream = std.mem.zeroes(zlib.z_stream);
+    if (bytes.len > std.math.maxInt(@TypeOf(stream.avail_in))) return error.StreamTooLong;
     stream.next_in = @constCast(bytes.ptr);
     stream.avail_in = @intCast(bytes.len);
 
@@ -1068,13 +1097,15 @@ fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]u8 
     }
     defer _ = zlib.inflateEnd(&stream);
 
-    const initial_capacity = @max(bytes.len * 3 + 4096, 4096);
+    const allocation_limit = inflateAllocationLimit(max_output_bytes);
+    const initial_capacity = @min(initialInflateCapacity(bytes.len, 0, max_output_bytes), allocation_limit);
     try output.resize(allocator, initial_capacity);
 
     while (true) {
         const total_out: usize = @intCast(stream.total_out);
         if (total_out == output.items.len) {
-            try output.resize(allocator, output.items.len * 2);
+            if (output.items.len >= allocation_limit) return error.StreamTooLong;
+            try output.resize(allocator, nextInflateCapacity(output.items.len, allocation_limit));
         }
         stream.next_out = output.items.ptr + total_out;
         stream.avail_out = @intCast(output.items.len - total_out);
@@ -1082,6 +1113,7 @@ fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]u8 
         const status = zlib.inflate(&stream, zlib.Z_NO_FLUSH);
         switch (status) {
             zlib.Z_STREAM_END => {
+                if (stream.total_out > max_output_bytes) return error.StreamTooLong;
                 try output.resize(allocator, @intCast(stream.total_out));
                 return output.toOwnedSlice(allocator);
             },
@@ -1095,22 +1127,49 @@ fn inflateWithStdFlate(
     allocator: std.mem.Allocator,
     bytes: []const u8,
     container: flate.Container,
-    initial_capacity: usize,
+    max_output_bytes: usize,
     invalid_error: ParseError,
 ) ParseError![]u8 {
     var input: std.Io.Reader = .fixed(bytes);
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
-    try output.ensureTotalCapacity(allocator, initial_capacity);
 
     var window: [flate.max_window_len]u8 = undefined;
     var decompress: flate.Decompress = .init(&input, container, &window);
-    decompress.reader.appendRemainingUnlimited(allocator, &output) catch |err| switch (err) {
+    decompress.reader.appendRemaining(allocator, &output, readerLimitForMax(max_output_bytes)) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
+        error.StreamTooLong => return error.StreamTooLong,
         error.ReadFailed => return invalid_error,
     };
+    if (output.items.len > max_output_bytes) return error.StreamTooLong;
 
     return output.toOwnedSlice(allocator);
+}
+
+fn initialInflateCapacity(input_len: usize, expected_size: u32, max_output_bytes: usize) usize {
+    if (expected_size > 0) return @min(@as(usize, @intCast(expected_size)), max_output_bytes);
+
+    const expanded = std.math.mul(usize, input_len, 3) catch max_output_bytes;
+    const with_slop = std.math.add(usize, expanded, 4096) catch max_output_bytes;
+    return @min(@max(with_slop, @as(usize, 4096)), max_output_bytes);
+}
+
+fn inflateAllocationLimit(max_output_bytes: usize) usize {
+    return if (max_output_bytes == std.math.maxInt(usize))
+        max_output_bytes
+    else
+        max_output_bytes + 1;
+}
+
+fn nextInflateCapacity(current_capacity: usize, allocation_limit: usize) usize {
+    if (current_capacity == 0) return @min(@as(usize, 1), allocation_limit);
+    const doubled = std.math.mul(usize, current_capacity, 2) catch allocation_limit;
+    return @min(doubled, allocation_limit);
+}
+
+fn readerLimitForMax(max_output_bytes: usize) std.Io.Limit {
+    if (max_output_bytes == std.math.maxInt(usize)) return .unlimited;
+    return .limited(max_output_bytes + 1);
 }
 
 const Tag = struct {
@@ -1195,6 +1254,19 @@ test "metadata parser rejects bytes that cannot be zip or zlib" {
     try std.testing.expectError(error.InvalidData, parseMovieMetadata(std.testing.allocator, &bytes));
 }
 
+test "metadata parser rejects zlib output above configured limit" {
+    const payload = [_]u8{0} ** 16;
+    const zlib_bytes = try storedZlib(std.testing.allocator, &payload);
+    defer std.testing.allocator.free(zlib_bytes);
+
+    try std.testing.expectError(
+        error.StreamTooLong,
+        parseMovieMetadataWithOptions(std.testing.allocator, zlib_bytes, .{
+            .max_output_bytes = payload.len - 1,
+        }),
+    );
+}
+
 test "protobuf metadata parser reads movie params and counts repeated fields" {
     const proto = [_]u8{
         0x0a, 0x05, '2',  '.',  '0',  '.',  '0',
@@ -1251,4 +1323,24 @@ test "protobuf parser reads sprite frame geometry and keep shape marker" {
     try std.testing.expectEqual(@as(u32, 1), frame.shape_count);
     try std.testing.expectEqual(@as(i32, @intFromEnum(model.ShapeType.keep)), frame.first_shape_type);
     try std.testing.expectEqual(@as(u8, 1), frame.is_keep_frame);
+}
+
+fn storedZlib(test_allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    if (data.len > std.math.maxInt(u16)) return error.StreamTooLong;
+
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(test_allocator);
+
+    try bytes.resize(test_allocator, 2 + 5 + data.len + 4);
+    bytes.items[0] = 0x78;
+    bytes.items[1] = 0x01;
+    bytes.items[2] = 0x01;
+
+    const len: u16 = @intCast(data.len);
+    std.mem.writeInt(u16, bytes.items[3..5], len, .little);
+    std.mem.writeInt(u16, bytes.items[5..7], ~len, .little);
+    @memcpy(bytes.items[7 .. 7 + data.len], data);
+    std.mem.writeInt(u32, bytes.items[7 + data.len ..][0..4], std.hash.Adler32.hash(data), .big);
+
+    return bytes.toOwnedSlice(test_allocator);
 }
