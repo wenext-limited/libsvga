@@ -161,9 +161,9 @@ pub fn parseMovieProto(allocator: std.mem.Allocator, bytes: []const u8) ParseErr
         .view_box_height = params.view_box_height,
         .fps = params.fps,
         .frames = params.frames,
-        .image_count = @intCast(assets.items.len),
-        .sprite_count = @intCast(sprites.items.len),
-        .audio_count = @intCast(audios.items.len),
+        .image_count = try countToU32(assets.items.len),
+        .sprite_count = try countToU32(sprites.items.len),
+        .audio_count = try countToU32(audios.items.len),
         .assets = try assets.toOwnedSlice(allocator),
         .sprites = try sprites.toOwnedSlice(allocator),
         .audios = try audios.toOwnedSlice(allocator),
@@ -279,9 +279,7 @@ fn parseFrame(allocator: std.mem.Allocator, bytes: []const u8) ParseError!model.
             5 => {
                 const shape_bytes = try reader.readLengthDelimited(tag.wire_type);
                 const shape = try parseShape(allocator, shape_bytes);
-                if (frame.shape_count == 0) frame.first_shape_type = @intFromEnum(shape.shape_type);
-                frame.shape_count += 1;
-                try shapes.append(allocator, shape);
+                try appendShapeSpec(allocator, &shapes, &frame, shape);
             },
             else => try reader.skip(tag.wire_type),
         }
@@ -829,8 +827,8 @@ fn parseLegacyJsonMovie(allocator: std.mem.Allocator, bytes: []const u8) ParseEr
         .view_box_height = params.view_box_height,
         .fps = params.fps,
         .frames = params.frames,
-        .image_count = @intCast(assets.items.len),
-        .sprite_count = @intCast(sprites.items.len),
+        .image_count = try countToU32(assets.items.len),
+        .sprite_count = try countToU32(sprites.items.len),
         .audio_count = 0,
         .assets = try assets.toOwnedSlice(allocator),
         .sprites = try sprites.toOwnedSlice(allocator),
@@ -879,10 +877,7 @@ fn parseJsonFrame(allocator: std.mem.Allocator, frame_object: *const std.json.Ob
         if (jsonArray(shapes_value)) |json_shapes| {
             for (json_shapes) |*shape_value| {
                 if (jsonObject(shape_value)) |shape_object| {
-                    const shape = parseJsonShape(shape_object);
-                    if (frame.shape_count == 0) frame.first_shape_type = @intFromEnum(shape.shape_type);
-                    frame.shape_count += 1;
-                    try shapes.append(allocator, shape);
+                    try appendShapeSpec(allocator, &shapes, &frame, parseJsonShape(shape_object));
                 }
             }
         }
@@ -1072,6 +1067,23 @@ fn jsonInt(value: *const std.json.Value) ?i32 {
 fn int64ToI32(value: i64) ?i32 {
     if (value < std.math.minInt(i32) or value > std.math.maxInt(i32)) return null;
     return @intCast(value);
+}
+
+fn countToU32(count: usize) ParseError!u32 {
+    if (count > std.math.maxInt(u32)) return error.InvalidData;
+    return @intCast(count);
+}
+
+fn appendShapeSpec(
+    allocator: std.mem.Allocator,
+    shapes: *std.ArrayList(model.ShapeSpec),
+    frame: *model.Frame,
+    shape: model.ShapeSpec,
+) ParseError!void {
+    if (frame.shape_count == std.math.maxInt(u32)) return error.InvalidData;
+    if (frame.shape_count == 0) frame.first_shape_type = @intFromEnum(shape.shape_type);
+    frame.shape_count += 1;
+    try shapes.append(allocator, shape);
 }
 
 fn floatToI32(value: f64) ?i32 {

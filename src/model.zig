@@ -507,6 +507,7 @@ pub const Movie = struct {
     }
 
     fn assetByKeyWithAppendedPng(self: *const Movie, key_prefix: []const u8) ?*const Asset {
+        if (key_prefix.len > std.math.maxInt(usize) - 4) return null;
         for (self.assets) |*asset| {
             if (asset.key.len != key_prefix.len + 4) continue;
             if (!std.mem.startsWith(u8, asset.key, key_prefix)) continue;
@@ -696,9 +697,9 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
     var shape_total: usize = 0;
 
     for (sprites) |sprite| {
-        frame_total += sprite.frames.len;
+        frame_total = std.math.add(usize, frame_total, sprite.frames.len) catch return error.InvalidFrameCount;
         for (sprite.frames) |frame| {
-            shape_total += frame.shapes.len;
+            shape_total = std.math.add(usize, shape_total, frame.shapes.len) catch return error.InvalidFrameCount;
         }
     }
 
@@ -1044,8 +1045,14 @@ pub fn validateSpec(spec: MovieSpec) ValidationError!void {
     if (spec.sprites.len > std.math.maxInt(u32)) return error.InvalidMovieCounts;
     if (spec.assets.len > std.math.maxInt(u32)) return error.InvalidMovieCounts;
     if (spec.audios.len > std.math.maxInt(u32)) return error.InvalidMovieCounts;
+    var total_frame_count: usize = 0;
+    var total_shape_count: usize = 0;
     for (spec.sprites) |sprite| {
         if (sprite.frames.len > std.math.maxInt(u32)) return error.InvalidFrameCount;
+        total_frame_count = std.math.add(usize, total_frame_count, sprite.frames.len) catch return error.InvalidFrameCount;
+        for (sprite.frames) |frame| {
+            total_shape_count = std.math.add(usize, total_shape_count, frame.shapes.len) catch return error.InvalidFrameCount;
+        }
     }
 }
 
