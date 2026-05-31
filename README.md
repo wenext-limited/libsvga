@@ -59,7 +59,7 @@ creating the XCFramework and verifies 64-bit Mach-O archive member alignment.
 Build release archives with:
 
 ```sh
-zig build package-release -Doptimize=ReleaseFast -Drelease-version=0.1.0
+zig build package-release -Doptimize=ReleaseFast -Drelease-version=0.2.4
 ```
 
 The package step produces:
@@ -210,10 +210,13 @@ The parser-parity fixture runs currently pass:
 - private production `.svga` resources: `ok=175 failed=0`
 
 The standalone benchmark compares `libsvga` against the archived
-SVGAPlayer-iOS parser on private fixtures. A recent `ITERATIONS=3` run:
+SVGAPlayer-iOS parser on private fixtures. For native Apple production builds,
+use `-Dsystem-zlib=true` when linking against platform `libz`; portable release
+packages keep `-Dsystem-zlib=false` so they do not require a target zlib at
+package build time. A recent `ITERATIONS=50` native run with system zlib:
 
-- `zig/libsvga`: `754048.4 ns_per_parse`
-- `objc/SVGAPlayer-iOS`: `2463912.8 ns_per_parse`
+- `zig/libsvga`: `839931.1 ns_per_parse`
+- `objc/SVGAPlayer-iOS`: `1968952.9 ns_per_parse`
 
 ## Design Boundary
 

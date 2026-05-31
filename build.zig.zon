@@ -1,6 +1,6 @@
 .{
     .name = .libsvga,
-    .version = "0.1.0",
+    .version = "0.2.4",
     .fingerprint = 0x248c346ef07cff4e,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{},
