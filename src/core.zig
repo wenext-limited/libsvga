@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const model = @import("model.zig");
 const parser = @import("parser.zig");
 
-pub const default_max_input_bytes: usize = 256 * 1024 * 1024;
+pub const default_max_input_bytes: usize = 64 * 1024 * 1024;
 pub const default_max_output_bytes: usize = parser.default_max_output_bytes;
 
 /// Parser memory limits. `max_output_bytes` caps decompressed zlib/ZIP payloads.

@@ -22,7 +22,7 @@ pub const ParseError = error{
     InvalidJson,
 } || std.mem.Allocator.Error;
 
-pub const default_max_output_bytes: usize = 256 * 1024 * 1024;
+pub const default_max_output_bytes: usize = 64 * 1024 * 1024;
 
 pub const ParseOptions = struct {
     max_output_bytes: usize = default_max_output_bytes,
