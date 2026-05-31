@@ -2055,6 +2055,193 @@ test "C API exposes render capabilities for bitmap and fallback frames" {
     try std.testing.expectEqual(@as(u8, 0), movie_caps.direct_bitmap_compatible);
 }
 
+test "C API movie queries are safe for concurrent read-only access" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+
+    var movie = try model.Movie.init(std.testing.allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 2,
+        .assets = &.{
+            .{
+                .key = "hero",
+                .kind = .filename,
+                .filename = "hero.png",
+            },
+            .{
+                .key = "hero.png",
+                .kind = .image_bytes,
+                .bytes = "png-bytes",
+            },
+        },
+        .sprite_count = 1,
+        .sprites = &.{
+            .{
+                .image_key = "hero",
+                .frames = &.{
+                    .{
+                        .frame = model.computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                            .first_shape_type = @intFromEnum(model.ShapeType.shape),
+                            .shape_count = 1,
+                        }),
+                        .clip_path = "M0 0 L10 0 Z",
+                        .shapes = &.{
+                            .{
+                                .shape_type = .shape,
+                                .path_data = "M1 2 L3 4",
+                            },
+                        },
+                    },
+                    .{
+                        .frame = model.computeFrame(.{
+                            .alpha = 0.75,
+                            .layout = .{ .x = 1, .y = 2, .width = 10, .height = 10 },
+                            .first_shape_type = @intFromEnum(model.ShapeType.keep),
+                            .shape_count = 1,
+                        }),
+                        .shapes = &.{
+                            .{ .shape_type = .keep },
+                        },
+                    },
+                },
+            },
+        },
+    });
+    defer movie.deinit(std.testing.allocator);
+
+    const handle = handleFromMovie(&movie);
+    const worker_count = 4;
+    var threads: [worker_count]std.Thread = undefined;
+    var spawned: usize = 0;
+    errdefer {
+        for (threads[0..spawned]) |*thread| {
+            thread.join();
+        }
+    }
+
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, queryCAbiMovieReadOnlyRepeatedly, .{handle});
+        spawned += 1;
+    }
+    for (&threads) |*thread| {
+        thread.join();
+    }
+}
+
+test "C API parses and destroys independent movies concurrently" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+
+    const proto = [_]u8{
+        0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
+        0x12, 0x0e, 0x0d, 0x00, 0x00, 0xa0, 0x43,
+        0x15, 0x00, 0x00, 0x70, 0x43, 0x18, 0x1e,
+        0x20, 0x3c,
+    };
+    const zip = try storedZip(std.testing.allocator, "movie.binary", &proto);
+    defer std.testing.allocator.free(zip);
+
+    const worker_count = 4;
+    var threads: [worker_count]std.Thread = undefined;
+    var spawned: usize = 0;
+    errdefer {
+        for (threads[0..spawned]) |*thread| {
+            thread.join();
+        }
+    }
+
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, parseCAbiMovieRepeatedly, .{zip});
+        spawned += 1;
+    }
+    for (&threads) |*thread| {
+        thread.join();
+    }
+}
+
+fn queryCAbiMovieReadOnlyRepeatedly(handle: *const MovieHandle) void {
+    var iteration: usize = 0;
+    while (iteration < 128) : (iteration += 1) {
+        const frame_index: u32 = @intCast(iteration % 2);
+
+        var info: MovieInfo = undefined;
+        expectWorkerStatus(svga_movie_get_info(handle, &info), .ok);
+        expectWorker(info.frames == 2);
+        expectWorker(std.mem.eql(u8, std.mem.span(info.version_utf8.?), "2.0.0"));
+
+        var sprite_info: SpriteInfo = undefined;
+        expectWorkerStatus(svga_movie_get_sprite_info(handle, 0, &sprite_info), .ok);
+        expectWorker(sprite_info.frame_count == 2);
+        expectWorker(std.mem.eql(u8, std.mem.span(sprite_info.image_key_utf8.?), "hero"));
+
+        var render_commands: ?[*]const RenderCommandInfo = null;
+        var render_command_count: u32 = 0;
+        expectWorkerStatus(
+            svga_movie_get_render_commands(handle, frame_index, &render_commands, &render_command_count),
+            .ok,
+        );
+        expectWorker(render_command_count == 1);
+        expectWorker(render_commands != null);
+        expectWorker(render_commands.?[0].sprite_index == 0);
+
+        var render_items: ?[*]const RenderItemInfo = null;
+        var render_item_count: u32 = 0;
+        expectWorkerStatus(
+            svga_movie_get_render_items(handle, frame_index, &render_items, &render_item_count),
+            .ok,
+        );
+        expectWorker(render_item_count == 1);
+        expectWorker(render_items != null);
+        expectWorker(render_items.?[0].has_shapes == 1);
+
+        var asset_info: AssetInfo = undefined;
+        expectWorkerStatus(svga_movie_resolve_image_asset(handle, "hero", &asset_info), .ok);
+        expectWorker(asset_info.bytes != null);
+        expectWorker(std.mem.eql(u8, asset_info.bytes.?[0..asset_info.byte_count], "png-bytes"));
+
+        var shape_commands: ?[*]const PathCommandInfo = null;
+        var shape_command_count: usize = 0;
+        expectWorkerStatus(
+            svga_movie_get_shape_path_commands(handle, 0, 0, 0, &shape_commands, &shape_command_count),
+            .ok,
+        );
+        expectWorker(shape_command_count == 2);
+        expectWorker(shape_commands != null);
+
+        var capabilities: RenderCapabilitiesInfo = undefined;
+        expectWorkerStatus(
+            svga_movie_get_frame_render_capabilities(handle, frame_index, &capabilities),
+            .ok,
+        );
+        expectWorker(capabilities.required_features & @intFromEnum(model.RenderFeature.bitmap_quads) != 0);
+    }
+}
+
+fn parseCAbiMovieRepeatedly(bytes: []const u8) void {
+    var iteration: usize = 0;
+    while (iteration < 32) : (iteration += 1) {
+        var out_movie: ?*MovieHandle = null;
+        expectWorkerStatus(svga_movie_parse(bytes.ptr, bytes.len, &out_movie), .ok);
+
+        var info: MovieInfo = undefined;
+        expectWorkerStatus(svga_movie_get_info(out_movie, &info), .ok);
+        expectWorker(info.frames == 60);
+
+        svga_movie_destroy(out_movie);
+    }
+}
+
+fn expectWorkerStatus(status: i32, expected: Status) void {
+    if (status != statusCode(expected)) @panic("unexpected concurrent worker status");
+}
+
+fn expectWorker(condition: bool) void {
+    if (!condition) @panic("concurrent worker assertion failed");
+}
+
 fn storedZip(test_allocator: std.mem.Allocator, name: []const u8, data: []const u8) ![]u8 {
     var bytes: std.ArrayList(u8) = .empty;
     errdefer bytes.deinit(test_allocator);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const svg_path = @import("svg_path.zig");
 
 pub const max_version_bytes = 255;
@@ -1305,6 +1306,122 @@ test "movie owns parsed path commands for clips and path shapes" {
     try std.testing.expectEqual(@as(usize, 1), movie.metadata.sprite_frame_ranges[0].count);
     try std.testing.expectEqual(@as(usize, 0), movie.metadata.frame_shape_ranges[0].start);
     try std.testing.expectEqual(@as(usize, 1), movie.metadata.frame_shape_ranges[0].count);
+}
+
+test "movie supports concurrent read-only access" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var movie = try Movie.init(allocator, .{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 2,
+        .assets = &.{
+            .{
+                .key = "hero",
+                .kind = .filename,
+                .filename = "hero.png",
+            },
+            .{
+                .key = "hero.png",
+                .kind = .image_bytes,
+                .bytes = "png-bytes",
+            },
+        },
+        .sprite_count = 1,
+        .sprites = &.{
+            .{
+                .image_key = "hero",
+                .frames = &.{
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 1,
+                            .layout = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+                            .first_shape_type = @intFromEnum(ShapeType.shape),
+                            .shape_count = 1,
+                        }),
+                        .clip_path = "M0 0 L10 0 Z",
+                        .shapes = &.{
+                            .{
+                                .shape_type = .shape,
+                                .path_data = "M1 2 L3 4",
+                            },
+                        },
+                    },
+                    .{
+                        .frame = computeFrame(.{
+                            .alpha = 0.75,
+                            .layout = .{ .x = 1, .y = 2, .width = 10, .height = 10 },
+                            .first_shape_type = @intFromEnum(ShapeType.keep),
+                            .shape_count = 1,
+                        }),
+                        .shapes = &.{
+                            .{ .shape_type = .keep },
+                        },
+                    },
+                },
+            },
+        },
+    });
+    defer movie.deinit(allocator);
+
+    const worker_count = 4;
+    var threads: [worker_count]std.Thread = undefined;
+    var spawned: usize = 0;
+    errdefer {
+        for (threads[0..spawned]) |*thread| {
+            thread.join();
+        }
+    }
+
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, queryMovieReadOnlyRepeatedly, .{&movie});
+        spawned += 1;
+    }
+    for (&threads) |*thread| {
+        thread.join();
+    }
+}
+
+fn queryMovieReadOnlyRepeatedly(movie: *const Movie) void {
+    var iteration: usize = 0;
+    while (iteration < 128) : (iteration += 1) {
+        const frame_index = iteration % 2;
+
+        const info = movie.info();
+        assertWorker(std.mem.eql(u8, info.version, "2.0.0"));
+        assertWorker(info.frames == 2);
+
+        const sprite = movie.spriteInfo(0) orelse @panic("missing sprite");
+        assertWorker(std.mem.eql(u8, sprite.image_key, "hero"));
+        assertWorker(sprite.frame_count == 2);
+
+        const frame = movie.frameInfo(0, frame_index) orelse @panic("missing frame");
+        assertWorker(frame.frame.visible == 1);
+
+        const commands = movie.renderCommands(frame_index) orelse @panic("missing commands");
+        assertWorker(commands.len == 1);
+        assertWorker(commands[0].sprite_index == 0);
+
+        const items = movie.renderItems(frame_index) orelse @panic("missing items");
+        assertWorker(items.len == 1);
+        assertWorker(items[0].has_shapes == 1);
+
+        const asset = movie.resolveImageAsset("hero") orelse @panic("missing image asset");
+        assertWorker(std.mem.eql(u8, asset.bytes, "png-bytes"));
+
+        assertWorker(movie.metadata.sprite_records.len == 1);
+        assertWorker(movie.metadata.frame_records.len == 2);
+        assertWorker(movie.metadata.clip_path_commands.len == 3);
+        assertWorker(movie.metadata.shape_path_commands.len == 2);
+        assertWorker(movie.visualFrameIndex(frame_index) != null);
+    }
+}
+
+fn assertWorker(condition: bool) void {
+    if (!condition) @panic("concurrent read assertion failed");
 }
 
 test "movie metadata accepts positive fps outside documented player values" {
