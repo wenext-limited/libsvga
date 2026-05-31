@@ -1101,6 +1101,8 @@ fn statusFromError(err: anyerror) Status {
         error.InvalidMovieCounts,
         error.InvalidSpriteKey,
         error.InvalidFrameCount,
+        error.InvalidShapeCount,
+        error.InvalidPathCommandCount,
         error.InvalidUrl,
         error.UnexpectedCharacter,
         error.InvalidFormat,
