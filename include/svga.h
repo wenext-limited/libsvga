@@ -81,7 +81,7 @@ typedef struct svga_movie_desc {
     float view_box_height;
     /** Frames per second. Must be positive. */
     int32_t fps;
-    /** Total frame count. Must be non-negative. */
+    /** Total frame count. Must be positive. */
     int32_t frames;
     /** Declared image count from the source movie. */
     uint32_t image_count;

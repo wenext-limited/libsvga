@@ -524,11 +524,18 @@ pub const Asset = struct {
     filename: [:0]u8,
 
     pub fn init(allocator: std.mem.Allocator, spec: AssetSpec) !Asset {
+        const key = try allocator.dupeZ(u8, spec.key);
+        errdefer allocator.free(key);
+        const bytes = try allocator.dupe(u8, spec.bytes);
+        errdefer allocator.free(bytes);
+        const filename = try allocator.dupeZ(u8, spec.filename);
+        errdefer allocator.free(filename);
+
         return .{
-            .key = try allocator.dupeZ(u8, spec.key),
+            .key = key,
             .kind = spec.kind,
-            .bytes = try allocator.dupe(u8, spec.bytes),
-            .filename = try allocator.dupeZ(u8, spec.filename),
+            .bytes = bytes,
+            .filename = filename,
         };
     }
 
@@ -585,11 +592,12 @@ pub const Sprite = struct {
             initialized_frames += 1;
         }
 
-        return .{
-            .image_key = try allocator.dupeZ(u8, spec.image_key),
-            .matte_key = try allocator.dupeZ(u8, spec.matte_key),
-            .frames = frames,
-        };
+        const image_key = try allocator.dupeZ(u8, spec.image_key);
+        errdefer allocator.free(image_key);
+        const matte_key = try allocator.dupeZ(u8, spec.matte_key);
+        errdefer allocator.free(matte_key);
+
+        return .{ .image_key = image_key, .matte_key = matte_key, .frames = frames };
     }
 
     pub fn deinit(self: *Sprite, allocator: std.mem.Allocator) void {
@@ -1110,6 +1118,32 @@ test "movie metadata can be validated and owned" {
     try std.testing.expectEqual(@as(u32, 0), items[0].shape_frame_index);
     try std.testing.expectEqual(@as(u8, 0), items[0].is_matte);
     try std.testing.expectEqual(@as(u8, 0), items[0].has_matte);
+}
+
+test "asset init cleans up after allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, assetInitAllocationFailure, .{});
+}
+
+fn assetInitAllocationFailure(allocator: std.mem.Allocator) !void {
+    var asset = try Asset.init(allocator, .{
+        .key = "hero",
+        .kind = .image_bytes,
+        .bytes = "png-bytes",
+        .filename = "hero.png",
+    });
+    defer asset.deinit(allocator);
+}
+
+test "sprite init cleans up after allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, spriteInitAllocationFailure, .{});
+}
+
+fn spriteInitAllocationFailure(allocator: std.mem.Allocator) !void {
+    var sprite = try Sprite.init(allocator, .{
+        .image_key = "hero",
+        .matte_key = "hero.matte",
+    });
+    defer sprite.deinit(allocator);
 }
 
 test "render items resolve keep-frame shape source once" {
