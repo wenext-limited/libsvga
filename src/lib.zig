@@ -13,6 +13,7 @@ pub const svg_path = @import("svg_path.zig");
 
 pub const Movie = model.Movie;
 pub const MovieInfo = model.MovieInfo;
+pub const ModelLimits = model.ModelLimits;
 pub const ParseFileOptions = core.ParseFileOptions;
 pub const ParseOptions = core.ParseOptions;
 pub const DownloadOptions = core.DownloadOptions;

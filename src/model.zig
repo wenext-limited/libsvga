@@ -3,13 +3,31 @@ const builtin = @import("builtin");
 const svg_path = @import("svg_path.zig");
 
 pub const max_version_bytes = 255;
-pub const max_asset_count = 4096;
-pub const max_sprite_count = 4096;
-pub const max_audio_count = 4096;
-pub const max_movie_frame_count = 10_000;
-pub const max_total_sprite_frames = 100_000;
-pub const max_total_shapes = 100_000;
-pub const max_total_path_commands = 1_000_000;
+pub const default_max_asset_count = 4096;
+pub const default_max_sprite_count = 4096;
+pub const default_max_audio_count = 4096;
+pub const default_max_movie_frame_count = 10_000;
+pub const default_max_total_sprite_frames = 128_000;
+pub const default_max_total_shapes = 100_000;
+pub const default_max_total_path_commands = 1_000_000;
+
+pub const max_asset_count = default_max_asset_count;
+pub const max_sprite_count = default_max_sprite_count;
+pub const max_audio_count = default_max_audio_count;
+pub const max_movie_frame_count = default_max_movie_frame_count;
+pub const max_total_sprite_frames = default_max_total_sprite_frames;
+pub const max_total_shapes = default_max_total_shapes;
+pub const max_total_path_commands = default_max_total_path_commands;
+
+pub const ModelLimits = struct {
+    max_asset_count: usize = default_max_asset_count,
+    max_sprite_count: usize = default_max_sprite_count,
+    max_audio_count: usize = default_max_audio_count,
+    max_movie_frame_count: usize = default_max_movie_frame_count,
+    max_total_sprite_frames: usize = default_max_total_sprite_frames,
+    max_total_shapes: usize = default_max_total_shapes,
+    max_total_path_commands: usize = default_max_total_path_commands,
+};
 
 /// Borrowed movie description produced by the parser before ownership is moved
 /// into Movie. Slices in this struct are valid as long as the parser arena lives.
@@ -321,7 +339,11 @@ pub const Movie = struct {
     /// boundary, building stable NUL-terminated strings and flattened render
     /// tables for C/Swift/Android/Web callers.
     pub fn init(allocator: std.mem.Allocator, spec: MovieSpec) !Movie {
-        try validateSpec(spec);
+        return initWithLimits(allocator, spec, .{});
+    }
+
+    pub fn initWithLimits(allocator: std.mem.Allocator, spec: MovieSpec, limits: ModelLimits) !Movie {
+        try validateSpecWithLimits(spec, limits);
 
         var assets = try allocator.alloc(Asset, spec.assets.len);
         errdefer allocator.free(assets);
@@ -362,7 +384,7 @@ pub const Movie = struct {
             initialized_audios += 1;
         }
 
-        const metadata = try buildMetadataTables(allocator, sprites);
+        const metadata = try buildMetadataTables(allocator, sprites, limits);
         errdefer metadata.deinit(allocator);
 
         const render_data = try buildRenderData(allocator, sprites, spec.frames);
@@ -701,16 +723,20 @@ pub const Shape = struct {
     }
 };
 
-fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !MetadataTables {
+fn buildMetadataTables(
+    allocator: std.mem.Allocator,
+    sprites: []const Sprite,
+    limits: ModelLimits,
+) !MetadataTables {
     var frame_total: usize = 0;
     var shape_total: usize = 0;
 
     for (sprites) |sprite| {
         frame_total = std.math.add(usize, frame_total, sprite.frames.len) catch return error.InvalidFrameCount;
-        if (frame_total > max_total_sprite_frames) return error.InvalidFrameCount;
+        if (frame_total > limits.max_total_sprite_frames) return error.InvalidFrameCount;
         for (sprite.frames) |frame| {
             shape_total = std.math.add(usize, shape_total, frame.shapes.len) catch return error.InvalidShapeCount;
-            if (shape_total > max_total_shapes) return error.InvalidShapeCount;
+            if (shape_total > limits.max_total_shapes) return error.InvalidShapeCount;
         }
     }
 
@@ -755,7 +781,7 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
             const clip_path_command_count = count: {
                 const parsed_clip_path_commands = try svg_path.parse(allocator, frame.clip_path);
                 defer allocator.free(parsed_clip_path_commands);
-                try appendPathCommands(allocator, &clip_path_commands, parsed_clip_path_commands);
+                try appendPathCommands(allocator, &clip_path_commands, parsed_clip_path_commands, limits);
                 break :count parsed_clip_path_commands.len;
             };
             frame_clip_path_command_ranges[frame_index] = .{
@@ -771,7 +797,7 @@ fn buildMetadataTables(allocator: std.mem.Allocator, sprites: []const Sprite) !M
                     if (shape.shape_type != .shape) break :count 0;
                     const parsed_shape_path_commands = try svg_path.parse(allocator, shape.path_data);
                     defer allocator.free(parsed_shape_path_commands);
-                    try appendPathCommands(allocator, &shape_path_commands, parsed_shape_path_commands);
+                    try appendPathCommands(allocator, &shape_path_commands, parsed_shape_path_commands, limits);
                     break :count parsed_shape_path_commands.len;
                 };
                 shape_path_command_ranges[shape_index] = .{
@@ -807,10 +833,11 @@ fn appendPathCommands(
     allocator: std.mem.Allocator,
     commands: *std.ArrayList(PathCommand),
     additional_commands: []const PathCommand,
+    limits: ModelLimits,
 ) !void {
-    if (additional_commands.len > max_total_path_commands) return error.InvalidPathCommandCount;
+    if (additional_commands.len > limits.max_total_path_commands) return error.InvalidPathCommandCount;
     const next_count = std.math.add(usize, commands.items.len, additional_commands.len) catch return error.InvalidPathCommandCount;
-    if (next_count > max_total_path_commands) return error.InvalidPathCommandCount;
+    if (next_count > limits.max_total_path_commands) return error.InvalidPathCommandCount;
     try commands.appendSlice(allocator, additional_commands);
 }
 
@@ -1051,6 +1078,10 @@ fn f32BitsEqual(left: f32, right: f32) bool {
 }
 
 pub fn validateSpec(spec: MovieSpec) ValidationError!void {
+    return validateSpecWithLimits(spec, .{});
+}
+
+pub fn validateSpecWithLimits(spec: MovieSpec, limits: ModelLimits) ValidationError!void {
     if (spec.version.len > max_version_bytes) return error.InvalidVersion;
     if (std.mem.indexOfScalar(u8, spec.version, 0) != null) return error.InvalidVersion;
 
@@ -1062,24 +1093,26 @@ pub fn validateSpec(spec: MovieSpec) ValidationError!void {
     }
 
     if (spec.fps <= 0) return error.InvalidFps;
-    if (spec.frames <= 0 or spec.frames > max_movie_frame_count) return error.InvalidFrames;
+    if (spec.frames <= 0 or @as(usize, @intCast(spec.frames)) > limits.max_movie_frame_count) {
+        return error.InvalidFrames;
+    }
     if (spec.sprites.len != 0 and spec.sprite_count != spec.sprites.len) return error.InvalidMovieCounts;
-    if (spec.sprite_count > max_sprite_count) return error.InvalidMovieCounts;
-    if (spec.image_count > max_asset_count) return error.InvalidMovieCounts;
-    if (spec.audio_count > max_audio_count) return error.InvalidMovieCounts;
-    if (spec.sprites.len > max_sprite_count) return error.InvalidMovieCounts;
-    if (spec.assets.len > max_asset_count) return error.InvalidMovieCounts;
-    if (spec.audios.len > max_audio_count) return error.InvalidMovieCounts;
+    if (spec.sprite_count > limits.max_sprite_count) return error.InvalidMovieCounts;
+    if (spec.image_count > limits.max_asset_count) return error.InvalidMovieCounts;
+    if (spec.audio_count > limits.max_audio_count) return error.InvalidMovieCounts;
+    if (spec.sprites.len > limits.max_sprite_count) return error.InvalidMovieCounts;
+    if (spec.assets.len > limits.max_asset_count) return error.InvalidMovieCounts;
+    if (spec.audios.len > limits.max_audio_count) return error.InvalidMovieCounts;
     var total_frame_count: usize = 0;
     var total_shape_count: usize = 0;
     for (spec.sprites) |sprite| {
-        if (sprite.frames.len > max_total_sprite_frames) return error.InvalidFrameCount;
+        if (sprite.frames.len > limits.max_total_sprite_frames) return error.InvalidFrameCount;
         total_frame_count = std.math.add(usize, total_frame_count, sprite.frames.len) catch return error.InvalidFrameCount;
-        if (total_frame_count > max_total_sprite_frames) return error.InvalidFrameCount;
+        if (total_frame_count > limits.max_total_sprite_frames) return error.InvalidFrameCount;
         for (sprite.frames) |frame| {
-            if (frame.shapes.len > max_total_shapes) return error.InvalidShapeCount;
+            if (frame.shapes.len > limits.max_total_shapes) return error.InvalidShapeCount;
             total_shape_count = std.math.add(usize, total_shape_count, frame.shapes.len) catch return error.InvalidShapeCount;
-            if (total_shape_count > max_total_shapes) return error.InvalidShapeCount;
+            if (total_shape_count > limits.max_total_shapes) return error.InvalidShapeCount;
         }
     }
 }
@@ -1198,6 +1231,27 @@ test "movie validation rejects practical table count overflows" {
         .frames = 1,
         .sprite_count = max_sprite_count + 1,
     }));
+}
+
+test "custom model limits override total sprite frame cap" {
+    const spec = MovieSpec{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 2,
+        .sprite_count = 2,
+        .sprites = &.{
+            .{ .image_key = "a", .frames = &.{.{}} },
+            .{ .image_key = "b", .frames = &.{.{}} },
+        },
+    };
+
+    try std.testing.expectError(
+        error.InvalidFrameCount,
+        validateSpecWithLimits(spec, .{ .max_total_sprite_frames = 1 }),
+    );
+    try validateSpecWithLimits(spec, .{ .max_total_sprite_frames = 2 });
 }
 
 test "render items resolve keep-frame shape source once" {

@@ -68,6 +68,19 @@ pub const DownloadOptions = extern struct {
     max_input_bytes: usize,
 };
 
+pub const ParseOptions = extern struct {
+    abi_version: u32,
+    max_input_bytes: usize,
+    max_output_bytes: usize,
+    max_asset_count: usize,
+    max_sprite_count: usize,
+    max_audio_count: usize,
+    max_movie_frame_count: usize,
+    max_total_sprite_frames: usize,
+    max_total_shapes: usize,
+    max_total_path_commands: usize,
+};
+
 pub const Rect = extern struct {
     x: f32,
     y: f32,
@@ -842,20 +855,44 @@ export fn svga_movie_get_visual_frame_table(
     return statusCode(.ok);
 }
 
+export fn svga_parse_options_get_defaults(out_options: ?*ParseOptions) callconv(.c) i32 {
+    const out = out_options orelse return statusCode(.null_argument);
+    out.* = defaultParseOptions();
+    return statusCode(.ok);
+}
+
 export fn svga_movie_parse(bytes: ?[*]const u8, byte_count: usize, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
+    return svga_movie_parse_with_options(bytes, byte_count, null, out_movie);
+}
+
+export fn svga_movie_parse_with_options(
+    bytes: ?[*]const u8,
+    byte_count: usize,
+    parse_options: ?*const ParseOptions,
+    out_movie: ?*?*MovieHandle,
+) callconv(.c) i32 {
     const out = out_movie orelse return statusCode(.null_argument);
     out.* = null;
 
     if (bytes == null and byte_count != 0) return statusCode(.null_argument);
     if (byte_count == 0) return statusCode(.invalid_argument);
 
+    const options = parseOptionsFromC(parse_options) catch return statusCode(.invalid_argument);
     const input = bytes.?[0..byte_count];
-    const movie = core.parseMovie(allocator, input) catch |err| return statusCode(statusFromError(err));
+    const movie = core.parseMovieWithOptions(allocator, input, options) catch |err| return statusCode(statusFromError(err));
     out.* = handleFromMovie(movie);
     return statusCode(.ok);
 }
 
 export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
+    return svga_movie_parse_file_with_options(path_utf8, null, out_movie);
+}
+
+export fn svga_movie_parse_file_with_options(
+    path_utf8: ?[*:0]const u8,
+    parse_options: ?*const ParseOptions,
+    out_movie: ?*?*MovieHandle,
+) callconv(.c) i32 {
     const out = out_movie orelse return statusCode(.null_argument);
     out.* = null;
 
@@ -865,7 +902,8 @@ export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieH
     const path = std.mem.span(path_ptr);
     if (path.len == 0) return statusCode(.invalid_argument);
 
-    const movie = core.parseMovieFile(allocator, path, .{}) catch |err| return statusCode(statusFromError(err));
+    const options = parseFileOptionsFromC(parse_options) catch return statusCode(.invalid_argument);
+    const movie = core.parseMovieFile(allocator, path, options) catch |err| return statusCode(statusFromError(err));
     out.* = handleFromMovie(movie);
     return statusCode(.ok);
 }
@@ -1176,6 +1214,70 @@ fn statusFromError(err: anyerror) Status {
 
 fn handleFromMovie(movie: *model.Movie) *MovieHandle {
     return @ptrCast(movie);
+}
+
+fn defaultParseOptions() ParseOptions {
+    return .{
+        .abi_version = abi_version,
+        .max_input_bytes = core.default_max_input_bytes,
+        .max_output_bytes = core.default_max_output_bytes,
+        .max_asset_count = model.default_max_asset_count,
+        .max_sprite_count = model.default_max_sprite_count,
+        .max_audio_count = model.default_max_audio_count,
+        .max_movie_frame_count = model.default_max_movie_frame_count,
+        .max_total_sprite_frames = model.default_max_total_sprite_frames,
+        .max_total_shapes = model.default_max_total_shapes,
+        .max_total_path_commands = model.default_max_total_path_commands,
+    };
+}
+
+fn valueOrDefault(value: usize, default_value: usize) usize {
+    return if (value == 0) default_value else value;
+}
+
+fn modelLimitsFromC(provided: *const ParseOptions) model.ModelLimits {
+    return .{
+        .max_asset_count = valueOrDefault(provided.max_asset_count, model.default_max_asset_count),
+        .max_sprite_count = valueOrDefault(provided.max_sprite_count, model.default_max_sprite_count),
+        .max_audio_count = valueOrDefault(provided.max_audio_count, model.default_max_audio_count),
+        .max_movie_frame_count = valueOrDefault(provided.max_movie_frame_count, model.default_max_movie_frame_count),
+        .max_total_sprite_frames = valueOrDefault(
+            provided.max_total_sprite_frames,
+            model.default_max_total_sprite_frames,
+        ),
+        .max_total_shapes = valueOrDefault(provided.max_total_shapes, model.default_max_total_shapes),
+        .max_total_path_commands = valueOrDefault(
+            provided.max_total_path_commands,
+            model.default_max_total_path_commands,
+        ),
+    };
+}
+
+fn parseOptionsFromC(parse_options: ?*const ParseOptions) error{InvalidArgument}!core.ParseOptions {
+    var options: core.ParseOptions = .{};
+    if (parse_options) |provided| {
+        if (provided.abi_version != abi_version) return error.InvalidArgument;
+        if (provided.max_output_bytes != 0) {
+            options.max_output_bytes = provided.max_output_bytes;
+        }
+        options.model_limits = modelLimitsFromC(provided);
+    }
+    return options;
+}
+
+fn parseFileOptionsFromC(parse_options: ?*const ParseOptions) error{InvalidArgument}!core.ParseFileOptions {
+    var options: core.ParseFileOptions = .{};
+    if (parse_options) |provided| {
+        if (provided.abi_version != abi_version) return error.InvalidArgument;
+        if (provided.max_input_bytes != 0) {
+            options.max_input_bytes = provided.max_input_bytes;
+        }
+        if (provided.max_output_bytes != 0) {
+            options.max_output_bytes = provided.max_output_bytes;
+        }
+        options.model_limits = modelLimitsFromC(provided);
+    }
+    return options;
 }
 
 fn movieFromHandle(handle: *MovieHandle) *model.Movie {
@@ -2270,6 +2372,50 @@ test "C API parse rejects non-SVGA bytes without creating a handle" {
         svga_movie_parse(bytes[0..].ptr, bytes.len, &out_movie),
     );
     try std.testing.expect(out_movie == null);
+}
+
+test "C API parse options expose defaults and override model limits" {
+    var defaults: ParseOptions = undefined;
+    try std.testing.expectEqual(statusCode(.ok), svga_parse_options_get_defaults(&defaults));
+    try std.testing.expectEqual(abi_version, defaults.abi_version);
+    try std.testing.expectEqual(core.default_max_output_bytes, defaults.max_output_bytes);
+    try std.testing.expectEqual(model.default_max_total_sprite_frames, defaults.max_total_sprite_frames);
+
+    const proto = [_]u8{
+        0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
+        0x12, 0x0e, 0x0d, 0x00, 0x00, 0xa0, 0x43,
+        0x15, 0x00, 0x00, 0x70, 0x43, 0x18, 0x1e,
+        0x20, 0x3c,
+    };
+    const zip = try storedZip(std.testing.allocator, "movie.binary", &proto);
+    defer std.testing.allocator.free(zip);
+
+    var options = ParseOptions{
+        .abi_version = abi_version,
+        .max_input_bytes = 0,
+        .max_output_bytes = 0,
+        .max_asset_count = 0,
+        .max_sprite_count = 0,
+        .max_audio_count = 0,
+        .max_movie_frame_count = 1,
+        .max_total_sprite_frames = 0,
+        .max_total_shapes = 0,
+        .max_total_path_commands = 0,
+    };
+
+    var out_movie: ?*MovieHandle = null;
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_movie_parse_with_options(zip.ptr, zip.len, &options, &out_movie),
+    );
+    try std.testing.expect(out_movie == null);
+
+    options.max_movie_frame_count = 60;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_parse_with_options(zip.ptr, zip.len, &options, &out_movie),
+    );
+    defer svga_movie_destroy(out_movie);
 }
 
 test "C API parses a movie from a filesystem path" {

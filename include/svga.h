@@ -127,6 +127,35 @@ typedef struct svga_download_options {
     size_t max_input_bytes;
 } svga_download_options_t;
 
+/** Options for parse APIs. Zero limit fields use libsvga defaults. */
+typedef struct svga_parse_options {
+    /** Must be SVGA_ABI_VERSION. */
+    uint32_t abi_version;
+    /**
+     * Maximum file bytes accepted by svga_movie_parse_file_with_options().
+     *
+     * Ignored by svga_movie_parse_with_options(), which receives an already
+     * bounded byte slice. Use zero for the library default.
+     */
+    size_t max_input_bytes;
+    /** Maximum decompressed zlib or ZIP payload bytes. Use zero for default. */
+    size_t max_output_bytes;
+    /** Maximum declared asset records. Use zero for default. */
+    size_t max_asset_count;
+    /** Maximum declared sprite records. Use zero for default. */
+    size_t max_sprite_count;
+    /** Maximum declared audio records. Use zero for default. */
+    size_t max_audio_count;
+    /** Maximum timeline frame count. Use zero for default. */
+    size_t max_movie_frame_count;
+    /** Maximum total per-sprite frame records. Use zero for default. */
+    size_t max_total_sprite_frames;
+    /** Maximum total vector shape records. Use zero for default. */
+    size_t max_total_shapes;
+    /** Maximum total parsed SVG path commands. Use zero for default. */
+    size_t max_total_path_commands;
+} svga_parse_options_t;
+
 /** Float rectangle in SVGA source units. */
 typedef struct svga_rect {
     float x;
@@ -850,6 +879,17 @@ svga_status_t svga_movie_get_visual_frame_table(
 /* Parsing APIs. */
 
 /**
+ * Fills parse options with libsvga's current defaults.
+ *
+ * Callers may then adjust selected fields before passing the struct to
+ * svga_movie_parse_with_options() or svga_movie_parse_file_with_options().
+ *
+ * @param out_options Receives the default parse options. Must not be NULL.
+ * @return SVGA_STATUS_OK on success, otherwise SVGA_STATUS_NULL_ARGUMENT.
+ */
+svga_status_t svga_parse_options_get_defaults(svga_parse_options_t *out_options);
+
+/**
  * Parses SVGA bytes from memory.
  *
  * Supports ZIP SVGA packages and zlib-compressed movie.binary payloads. On
@@ -863,6 +903,25 @@ svga_status_t svga_movie_get_visual_frame_table(
 svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_movie_t **out_movie);
 
 /**
+ * Parses SVGA bytes from memory with explicit parser/model limits.
+ *
+ * Supports ZIP SVGA packages and zlib-compressed movie.binary payloads. On
+ * success, out_movie receives a new handle that must be destroyed.
+ *
+ * @param bytes Pointer to SVGA bytes. Must not be NULL when byte_count is non-zero.
+ * @param byte_count Number of bytes available at bytes. Must be greater than zero.
+ * @param options Optional parse limits. May be NULL for defaults.
+ * @param out_movie Receives a new movie handle on success. Must not be NULL.
+ * @return SVGA_STATUS_OK on success, otherwise parse, limit, validation, or allocation status.
+ */
+svga_status_t svga_movie_parse_with_options(
+    const uint8_t *bytes,
+    size_t byte_count,
+    const svga_parse_options_t *options,
+    svga_movie_t **out_movie
+);
+
+/**
  * Parses an SVGA file from a UTF-8 filesystem path.
  *
  * Some targets, such as freestanding WASM and Emscripten builds, do not expose
@@ -874,6 +933,24 @@ svga_status_t svga_movie_parse(const uint8_t *bytes, size_t byte_count, svga_mov
  * @return SVGA_STATUS_OK on success, otherwise IO, parse, limit, validation, or unsupported status.
  */
 svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_movie);
+
+/**
+ * Parses an SVGA file from a UTF-8 filesystem path with explicit limits.
+ *
+ * Some targets, such as freestanding WASM and Emscripten builds, do not expose
+ * filesystem access through this ABI and return SVGA_STATUS_UNSUPPORTED. Use
+ * svga_movie_parse_with_options() with bytes on those targets.
+ *
+ * @param path_utf8 NUL-terminated UTF-8 path to an SVGA file. Must not be NULL or empty.
+ * @param options Optional parse limits. May be NULL for defaults.
+ * @param out_movie Receives a new movie handle on success. Must not be NULL.
+ * @return SVGA_STATUS_OK on success, otherwise IO, parse, limit, validation, or unsupported status.
+ */
+svga_status_t svga_movie_parse_file_with_options(
+    const char *path_utf8,
+    const svga_parse_options_t *options,
+    svga_movie_t **out_movie
+);
 
 /**
  * Downloads an SVGA URL into memory and parses the downloaded bytes.

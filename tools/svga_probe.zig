@@ -10,13 +10,26 @@ pub fn main() !void {
     defer args.deinit();
 
     _ = args.next();
+    var options: libsvga.ParseFileOptions = .{};
     var saw_path = false;
     var ok_count: usize = 0;
     var fail_count: usize = 0;
 
     while (args.next()) |path| {
+        if (std.mem.eql(u8, path, "--max-total-sprite-frames")) {
+            const value = args.next() orelse {
+                std.debug.print("missing value for --max-total-sprite-frames\n", .{});
+                return error.MissingOptionValue;
+            };
+            options.model_limits.max_total_sprite_frames = std.fmt.parseInt(usize, value, 10) catch {
+                std.debug.print("invalid --max-total-sprite-frames value: {s}\n", .{value});
+                return error.InvalidOptionValue;
+            };
+            continue;
+        }
+
         saw_path = true;
-        const movie = libsvga.parseMovieFile(allocator, path, .{}) catch |err| {
+        const movie = libsvga.parseMovieFile(allocator, path, options) catch |err| {
             fail_count += 1;
             std.debug.print("{s}: parse failed: {s}\n", .{ path, @errorName(err) });
             continue;
@@ -42,7 +55,7 @@ pub fn main() !void {
     }
 
     if (!saw_path) {
-        std.debug.print("usage: svga_probe <file.svga> [...]\n", .{});
+        std.debug.print("usage: svga_probe [--max-total-sprite-frames N] <file.svga> [...]\n", .{});
         return error.MissingPath;
     }
 

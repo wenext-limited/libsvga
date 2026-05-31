@@ -9,6 +9,7 @@ pub const default_max_output_bytes: usize = parser.default_max_output_bytes;
 /// Parser memory limits. `max_output_bytes` caps decompressed zlib/ZIP payloads.
 pub const ParseOptions = struct {
     max_output_bytes: usize = default_max_output_bytes,
+    model_limits: model.ModelLimits = .{},
 };
 
 const has_network = switch (builtin.target.os.tag) {
@@ -21,6 +22,7 @@ const has_network = switch (builtin.target.os.tag) {
 pub const ParseFileOptions = struct {
     max_input_bytes: usize = default_max_input_bytes,
     max_output_bytes: usize = default_max_output_bytes,
+    model_limits: model.ModelLimits = .{},
 };
 
 /// Download parser limits. The default matches ParseFileOptions so every
@@ -28,6 +30,7 @@ pub const ParseFileOptions = struct {
 pub const DownloadOptions = struct {
     max_input_bytes: usize = default_max_input_bytes,
     max_output_bytes: usize = default_max_output_bytes,
+    model_limits: model.ModelLimits = .{},
 };
 
 /// Parse SVGA bytes into an owned, immutable Movie.
@@ -49,7 +52,7 @@ pub fn parseMovieWithOptions(allocator: std.mem.Allocator, bytes: []const u8, op
     const movie = try allocator.create(model.Movie);
     errdefer allocator.destroy(movie);
 
-    movie.* = try model.Movie.init(allocator, parsed.spec);
+    movie.* = try model.Movie.initWithLimits(allocator, parsed.spec, options.model_limits);
     return movie;
 }
 
@@ -64,6 +67,7 @@ pub fn parseMovieFile(
 
     return parseMovieWithOptions(allocator, input, .{
         .max_output_bytes = options.max_output_bytes,
+        .model_limits = options.model_limits,
     });
 }
 
@@ -82,6 +86,7 @@ pub fn downloadMovie(
 
     return parseMovieWithOptions(allocator, input, .{
         .max_output_bytes = options.max_output_bytes,
+        .model_limits = options.model_limits,
     });
 }
 
