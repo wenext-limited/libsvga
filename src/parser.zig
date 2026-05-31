@@ -573,20 +573,20 @@ fn parseCentralDirectoryEntries(
         const comment_len = std.mem.readInt(u16, bytes[index + 32 ..][0..2], .little);
         const local_header_offset = std.mem.readInt(u32, bytes[index + 42 ..][0..4], .little);
 
-        const name_start = index + 46;
-        const next_index = name_start + @as(usize, name_len) + @as(usize, extra_len) + @as(usize, comment_len);
+        const name_start = try checkedAdd(index, 46);
+        const next_index = try checkedAdd(try checkedAdd(try checkedAdd(name_start, name_len), extra_len), comment_len);
         if (next_index > directory_end) return error.TruncatedInput;
 
         const local_index: usize = @intCast(local_header_offset);
-        if (local_index + 30 > bytes.len) return error.TruncatedInput;
+        if (local_index > bytes.len or bytes.len - local_index < 30) return error.TruncatedInput;
         if (std.mem.readInt(u32, bytes[local_index..][0..4], .little) != 0x04034b50) return error.InvalidData;
 
         const local_name_len = std.mem.readInt(u16, bytes[local_index + 26 ..][0..2], .little);
         const local_extra_len = std.mem.readInt(u16, bytes[local_index + 28 ..][0..2], .little);
-        const data_start = local_index + 30 + @as(usize, local_name_len) + @as(usize, local_extra_len);
+        const data_start = try checkedAdd(try checkedAdd(try checkedAdd(local_index, 30), local_name_len), local_extra_len);
         if (data_start > bytes.len) return error.TruncatedInput;
         if (@as(usize, compressed_size) > bytes.len - data_start) return error.TruncatedInput;
-        const data_end = data_start + @as(usize, compressed_size);
+        const data_end = try checkedAdd(data_start, compressed_size);
 
         const name = try allocator.dupe(u8, bytes[name_start .. name_start + name_len]);
         const compressed = bytes[data_start..data_end];
@@ -608,7 +608,7 @@ fn parseLocalZipEntries(allocator: std.mem.Allocator, bytes: []const u8, options
     var index: usize = 0;
     var saw_local_header = false;
 
-    while (index + 4 <= bytes.len) {
+    while (bytes.len - index >= 4) {
         const signature = std.mem.readInt(u32, bytes[index..][0..4], .little);
         switch (signature) {
             0x04034b50 => {},
@@ -631,11 +631,11 @@ fn parseLocalZipEntries(allocator: std.mem.Allocator, bytes: []const u8, options
 
         if ((flags & 0x0008) != 0) return error.UnsupportedZip;
 
-        const name_start = index + 30;
-        const data_start = name_start + @as(usize, name_len) + @as(usize, extra_len);
+        const name_start = try checkedAdd(index, 30);
+        const data_start = try checkedAdd(try checkedAdd(name_start, name_len), extra_len);
         if (data_start > bytes.len) return error.TruncatedInput;
         if (@as(usize, compressed_size) > bytes.len - data_start) return error.TruncatedInput;
-        const data_end = data_start + @as(usize, compressed_size);
+        const data_end = try checkedAdd(data_start, compressed_size);
 
         const name = try allocator.dupe(u8, bytes[name_start .. name_start + name_len]);
         const compressed = bytes[data_start..data_end];
@@ -681,6 +681,10 @@ fn normalizedZipName(name: []const u8) []const u8 {
         result = result[1..];
     }
     return result;
+}
+
+fn checkedAdd(left: usize, right: anytype) ParseError!usize {
+    return std.math.add(usize, left, @as(usize, @intCast(right))) catch error.TruncatedInput;
 }
 
 /// Inflate raw deflate streams stored inside ZIP file entries.
@@ -1199,7 +1203,9 @@ const ProtoReader = struct {
 
     fn readLengthDelimited(self: *ProtoReader, wire_type: WireType) ParseError![]const u8 {
         if (wire_type != .length_delimited) return error.InvalidWireType;
-        const len: usize = @intCast(try self.readVarint());
+        const raw_len = try self.readVarint();
+        if (raw_len > std.math.maxInt(usize)) return error.InvalidData;
+        const len: usize = @intCast(raw_len);
         if (len > self.bytes.len - self.index) return error.TruncatedInput;
         const start = self.index;
         self.index += len;
@@ -1265,6 +1271,24 @@ test "metadata parser rejects zlib output above configured limit" {
             .max_output_bytes = payload.len - 1,
         }),
     );
+}
+
+test "metadata parser rejects central directory offsets outside input" {
+    var zip = [_]u8{0} ** (46 + 22);
+
+    std.mem.writeInt(u32, zip[0..4], 0x02014b50, .little);
+    std.mem.writeInt(u32, zip[42..46], std.math.maxInt(u32), .little);
+
+    const eocd = zip[46..];
+    std.mem.writeInt(u32, eocd[0..4], 0x06054b50, .little);
+    std.mem.writeInt(u32, eocd[12..16], 46, .little);
+    std.mem.writeInt(u32, eocd[16..20], 0, .little);
+
+    try std.testing.expectError(error.TruncatedInput, parseMovieMetadata(std.testing.allocator, &zip));
+}
+
+test "zip offset addition rejects usize overflow" {
+    try std.testing.expectError(error.TruncatedInput, checkedAdd(std.math.maxInt(usize), 1));
 }
 
 test "protobuf metadata parser reads movie params and counts repeated fields" {
