@@ -1181,6 +1181,25 @@ fn spriteInitAllocationFailure(allocator: std.mem.Allocator) !void {
     defer sprite.deinit(allocator);
 }
 
+test "movie validation rejects practical table count overflows" {
+    try std.testing.expectError(error.InvalidFrames, validateSpec(.{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = max_movie_frame_count + 1,
+    }));
+
+    try std.testing.expectError(error.InvalidMovieCounts, validateSpec(.{
+        .version = "2.0.0",
+        .view_box_width = 320,
+        .view_box_height = 240,
+        .fps = 30,
+        .frames = 1,
+        .sprite_count = max_sprite_count + 1,
+    }));
+}
+
 test "render items resolve keep-frame shape source once" {
     const allocator = std.testing.allocator;
     var movie = try Movie.init(allocator, .{
