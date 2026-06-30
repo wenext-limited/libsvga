@@ -779,6 +779,7 @@ fn buildMetadataTables(
 
             const clip_path_command_start = clip_path_commands.items.len;
             const clip_path_command_count = count: {
+                if (frame.clip_path.len == 0) break :count 0;
                 const parsed_clip_path_commands = try svg_path.parse(allocator, frame.clip_path);
                 defer allocator.free(parsed_clip_path_commands);
                 try appendPathCommands(allocator, &clip_path_commands, parsed_clip_path_commands, limits);
@@ -795,6 +796,7 @@ fn buildMetadataTables(
                 const shape_path_command_start = shape_path_commands.items.len;
                 const shape_path_command_count = count: {
                     if (shape.shape_type != .shape) break :count 0;
+                    if (shape.path_data.len == 0) break :count 0;
                     const parsed_shape_path_commands = try svg_path.parse(allocator, shape.path_data);
                     defer allocator.free(parsed_shape_path_commands);
                     try appendPathCommands(allocator, &shape_path_commands, parsed_shape_path_commands, limits);
@@ -896,8 +898,6 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
             }
             if (renderCommandForFrame(sprite_index, owned_frame.frame) != null) {
                 command_counts[frame_index] += 1;
-            }
-            if (renderItemForFrame(&sprite, sprite_index, frame_index, shape_frame_index) != null) {
                 item_counts[frame_index] += 1;
             }
         }
@@ -948,7 +948,7 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
             commands[command_index] = command;
             command_counts[frame_index] += 1;
 
-            const item = renderItemForFrame(&sprite, sprite_index, frame_index, shape_frame_index) orelse continue;
+            const item = renderItemForCommand(&sprite, command, frame_index, shape_frame_index);
             const item_index = item_counts[frame_index];
             items[item_index] = item;
             item_counts[frame_index] += 1;
@@ -992,10 +992,8 @@ fn transformIsFinite(transform: Transform) bool {
         std.math.isFinite(transform.ty);
 }
 
-fn renderItemForFrame(sprite: *const Sprite, sprite_index: usize, frame_index: usize, shape_frame_index: usize) ?RenderItem {
-    if (frame_index >= sprite.frames.len) return null;
+fn renderItemForCommand(sprite: *const Sprite, command: RenderCommand, frame_index: usize, shape_frame_index: usize) RenderItem {
     const owned_frame = &sprite.frames[frame_index];
-    const command = renderCommandForFrame(sprite_index, owned_frame.frame) orelse return null;
     const shape_frame = &sprite.frames[@min(shape_frame_index, sprite.frames.len - 1)];
 
     return .{

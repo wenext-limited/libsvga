@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
         bool,
         "system-zlib",
         "Use the target platform's libz instead of the portable Zig inflate backend",
-    ) orelse false;
+    ) orelse defaultSystemZlib(target.result);
     const build_probe = b.option(
         bool,
         "build-probe",
@@ -44,9 +44,9 @@ pub fn build(b: *std.Build) void {
         "Minimum iOS version used by the package-release Apple archive",
     ) orelse "15.0";
 
-    // Make the zlib backend choice visible to parser.zig at comptime. The
-    // default is Zig's portable inflater so release artifacts do not depend on
-    // a target libz.
+    // Make the zlib backend choice visible to parser.zig at comptime. Native
+    // Apple builds default to libz for speed; packaged release artifacts pass
+    // -Dsystem-zlib=false below so they stay self-contained.
     const options = b.addOptions();
     options.addOption(bool, "use_system_zlib", use_system_zlib);
 
@@ -145,6 +145,10 @@ fn isDarwin(os_tag: std.Target.Os.Tag) bool {
         .ios, .macos, .tvos, .visionos, .watchos => true,
         else => false,
     };
+}
+
+fn defaultSystemZlib(target: std.Target) bool {
+    return isDarwin(target.os.tag);
 }
 
 fn canBuildProbe(target: std.Target) bool {

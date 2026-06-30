@@ -52,6 +52,18 @@ zig/libsvga files=3374 parses=10122 ns_per_parse=3903483.8
 objc/SVGAPlayer-iOS files=3374 parses=10122 ns_per_parse=5148189.0
 ```
 
+After the Darwin default switched to system zlib and `model_init` avoided empty
+path parsing plus duplicate render command work, the same external comparison
+measured:
+
+```text
+zig/libsvga files=3374 parses=10122 ns_per_parse=1812952.9
+objc/SVGAPlayer-iOS files=3374 parses=10122 ns_per_parse=4814519.5
+```
+
+This puts native `libsvga` about 2.65x faster than the archived Objective-C
+parser on the COS zlib corpus.
+
 After adding `svga_phase_bench`, the default self-contained Zig std-flate build
 over the same corpus measured:
 
@@ -78,6 +90,27 @@ destroy_ns_per_parse=94911.7       pct_total=5.6
 Conclusion: default parse time is dominated by Zig std-flate inflation on the
 production zlib corpus. After a faster inflater, the next target is
 `model_init`, especially metadata/path/render table construction.
+
+After the first optimization pass, explicit portable std-flate and default
+Darwin system-zlib measured:
+
+```text
+# zig build -Doptimize=ReleaseFast -Dsystem-zlib=false phase-bench -- ...
+total_ns_per_parse=3771200.4
+inflate_ns_per_parse=2894138.8     pct_total=76.7
+protobuf_ns_per_parse=298494.2     pct_total=7.9
+model_init_ns_per_parse=443602.0   pct_total=11.8
+
+# zig build -Doptimize=ReleaseFast phase-bench -- ...
+total_ns_per_parse=1713289.4
+inflate_ns_per_parse=891213.5      pct_total=52.0
+protobuf_ns_per_parse=273778.3     pct_total=16.0
+model_init_ns_per_parse=421605.0   pct_total=24.6
+```
+
+The model-init micro-optimization reduced `model_init` from about
+617,861 ns/parse to about 443,602 ns/parse on the portable backend, while the
+Darwin default backend change accounts for the largest total parse win.
 
 The default-run TSV was written to:
 

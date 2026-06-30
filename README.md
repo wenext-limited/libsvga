@@ -44,9 +44,14 @@ The build produces:
 - `zig-out/include/svga.h`
 - `zig-out/bin/svga_probe`
 
-By default, builds use Zig's portable `std.compress.flate` inflater for SVGA
-zlib and ZIP/deflate payloads, so release artifacts do not need a target `libz`
-at link time. Pass `-Dsystem-zlib=true` to use the platform zlib instead.
+Native Darwin builds default to the platform `libz` inflater for SVGA zlib and
+ZIP/deflate payloads because it is materially faster on the production corpus.
+Pass `-Dsystem-zlib=false` to force Zig's portable `std.compress.flate`
+inflater. Non-Darwin builds default to the portable inflater.
+
+Release package builds pass `-Dsystem-zlib=false` explicitly so published
+portable archives and the SwiftPM XCFramework do not require consumers to link a
+target `libz`.
 
 On Darwin targets, `zig build` re-archives the installed static library with
 Apple `libtool`/`ranlib` so SwiftPM/Xcode's linker accepts
@@ -210,13 +215,16 @@ The parser-parity fixture runs currently pass:
 - private production `.svga` resources: `ok=175 failed=0`
 
 The standalone benchmark compares `libsvga` against the archived
-SVGAPlayer-iOS parser on private fixtures. For native Apple production builds,
-use `-Dsystem-zlib=true` when linking against platform `libz`; portable release
-packages keep `-Dsystem-zlib=false` so they do not require a target zlib at
-package build time. A recent `ITERATIONS=50` native run with system zlib:
+SVGAPlayer-iOS parser on private fixtures. Native Apple developer builds use
+system zlib by default; portable release packages keep `-Dsystem-zlib=false` so
+they do not require a target zlib at package build time. On the 3,374-file COS
+production zlib corpus with `ITERATIONS=3`:
 
-- `zig/libsvga`: `839931.1 ns_per_parse`
-- `objc/SVGAPlayer-iOS`: `1968952.9 ns_per_parse`
+- `zig/libsvga`: `1812952.9 ns_per_parse`
+- `objc/SVGAPlayer-iOS`: `4814519.5 ns_per_parse`
+
+Use `zig build -Doptimize=ReleaseFast phase-bench -- <fixture-dir>` for
+internal phase timings.
 
 ## Design Boundary
 
