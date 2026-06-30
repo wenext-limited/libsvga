@@ -241,6 +241,7 @@ fn addPortablePackage(
         b.fmt("-Doptimize={s}", .{optimize_arg}),
         "-Dsystem-zlib=false",
         "-Dbuild-probe=false",
+        "-Dbuild-phase-bench=false",
         "-p",
         build_prefix,
     });
@@ -396,6 +397,7 @@ fn addAppleSlice(
         b.fmt("-Doptimize={s}", .{optimize_arg}),
         "-Dsystem-zlib=false",
         "-Dbuild-probe=false",
+        "-Dbuild-phase-bench=false",
         "-p",
         prefix,
     });
