@@ -26,7 +26,52 @@ const Config = struct {
     max_files: ?usize = null,
     max_input_bytes: usize = libsvga.default_max_input_bytes,
     max_output_bytes: usize = libsvga.default_max_output_bytes,
+    model_mode: ModelMode = .full,
+    alloc_stats: bool = false,
     tsv_path: ?[]const u8 = null,
+};
+
+const ModelMode = enum {
+    full,
+    no_paths,
+    no_render,
+    metadata_only,
+    copy_only,
+    parse_only,
+
+    fn label(self: ModelMode) []const u8 {
+        return switch (self) {
+            .full => "full",
+            .no_paths => "no-paths",
+            .no_render => "no-render",
+            .metadata_only => "metadata-only",
+            .copy_only => "copy-only",
+            .parse_only => "parse-only",
+        };
+    }
+
+    fn initOptions(self: ModelMode) libsvga.model.MovieInitOptions {
+        return switch (self) {
+            .full => .{},
+            .no_paths => .{ .build_path_commands = false },
+            .no_render => .{
+                .build_render_data = false,
+                .build_visual_frame_indices = false,
+            },
+            .metadata_only => .{
+                .build_path_commands = false,
+                .build_render_data = false,
+                .build_visual_frame_indices = false,
+            },
+            .copy_only => .{
+                .build_metadata_tables = false,
+                .build_path_commands = false,
+                .build_render_data = false,
+                .build_visual_frame_indices = false,
+            },
+            .parse_only => unreachable,
+        };
+    }
 };
 
 const Fixture = struct {
@@ -34,8 +79,111 @@ const Fixture = struct {
     bytes: []u8,
 };
 
+const AllocationStats = struct {
+    alloc_count: usize = 0,
+    resize_count: usize = 0,
+    remap_count: usize = 0,
+    free_count: usize = 0,
+    alloc_bytes: usize = 0,
+    freed_bytes: usize = 0,
+    live_bytes: usize = 0,
+    peak_live_bytes: usize = 0,
+
+    fn add(self: *AllocationStats, other: AllocationStats) void {
+        self.alloc_count += other.alloc_count;
+        self.resize_count += other.resize_count;
+        self.remap_count += other.remap_count;
+        self.free_count += other.free_count;
+        self.alloc_bytes += other.alloc_bytes;
+        self.freed_bytes += other.freed_bytes;
+        self.live_bytes += other.live_bytes;
+        self.peak_live_bytes += other.peak_live_bytes;
+    }
+
+    fn noteAlloc(self: *AllocationStats, len: usize) void {
+        self.alloc_count += 1;
+        self.alloc_bytes += len;
+        self.live_bytes += len;
+        self.peak_live_bytes = @max(self.peak_live_bytes, self.live_bytes);
+    }
+
+    fn noteResize(self: *AllocationStats, old_len: usize, new_len: usize) void {
+        self.resize_count += 1;
+        self.noteSizeChange(old_len, new_len);
+    }
+
+    fn noteRemap(self: *AllocationStats, old_len: usize, new_len: usize) void {
+        self.remap_count += 1;
+        self.noteSizeChange(old_len, new_len);
+    }
+
+    fn noteSizeChange(self: *AllocationStats, old_len: usize, new_len: usize) void {
+        if (new_len > old_len) {
+            const delta = new_len - old_len;
+            self.alloc_bytes += delta;
+            self.live_bytes += delta;
+        } else {
+            const delta = old_len - new_len;
+            self.freed_bytes += delta;
+            self.live_bytes -|= delta;
+        }
+        self.peak_live_bytes = @max(self.peak_live_bytes, self.live_bytes);
+    }
+
+    fn noteFree(self: *AllocationStats, len: usize) void {
+        self.free_count += 1;
+        self.freed_bytes += len;
+        self.live_bytes -|= len;
+    }
+};
+
+const CountingAllocator = struct {
+    child: std.mem.Allocator,
+    stats: AllocationStats = .{},
+
+    fn allocator(self: *CountingAllocator) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = remap,
+                .free = free,
+            },
+        };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
+        const ptr = self.child.rawAlloc(len, alignment, ret_addr) orelse return null;
+        self.stats.noteAlloc(len);
+        return ptr;
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
+        if (!self.child.rawResize(memory, alignment, new_len, ret_addr)) return false;
+        self.stats.noteResize(memory.len, new_len);
+        return true;
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
+        const ptr = self.child.rawRemap(memory, alignment, new_len, ret_addr) orelse return null;
+        self.stats.noteRemap(memory.len, new_len);
+        return ptr;
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
+        self.child.rawFree(memory, alignment, ret_addr);
+        self.stats.noteFree(memory.len);
+    }
+};
+
 const Measurement = struct {
     container: ContainerKind,
+    model_mode: ModelMode = .full,
     input_bytes: usize = 0,
     inflated_bytes: usize = 0,
     total_ns: u64 = 0,
@@ -45,6 +193,7 @@ const Measurement = struct {
     model_ns: u64 = 0,
     destroy_ns: u64 = 0,
     checksum: u64 = 0,
+    allocation_stats: AllocationStats = .{},
 };
 
 const Totals = struct {
@@ -60,6 +209,7 @@ const Totals = struct {
     model_ns: u64 = 0,
     destroy_ns: u64 = 0,
     checksum: u64 = 0,
+    allocation_stats: AllocationStats = .{},
 
     fn add(self: *Totals, measurement: Measurement) void {
         self.parses += 1;
@@ -76,6 +226,7 @@ const Totals = struct {
         self.model_ns += measurement.model_ns;
         self.destroy_ns += measurement.destroy_ns;
         self.checksum +%= measurement.checksum;
+        self.allocation_stats.add(measurement.allocation_stats);
     }
 };
 
@@ -125,6 +276,10 @@ fn parseArgs(args: *std.process.ArgIterator) !Config {
             config.max_input_bytes = try parsePositive(args.next() orelse return error.MissingOptionValue, "--max-input-bytes");
         } else if (std.mem.eql(u8, arg, "--max-output-bytes")) {
             config.max_output_bytes = try parsePositive(args.next() orelse return error.MissingOptionValue, "--max-output-bytes");
+        } else if (std.mem.eql(u8, arg, "--model-mode")) {
+            config.model_mode = try parseModelMode(args.next() orelse return error.MissingOptionValue);
+        } else if (std.mem.eql(u8, arg, "--alloc-stats")) {
+            config.alloc_stats = true;
         } else if (std.mem.eql(u8, arg, "--tsv")) {
             config.tsv_path = args.next() orelse return error.MissingOptionValue;
         } else if (std.mem.startsWith(u8, arg, "--")) {
@@ -145,6 +300,15 @@ fn parseArgs(args: *std.process.ArgIterator) !Config {
         return error.MissingFixtureDir;
     }
     return config;
+}
+
+fn parseModelMode(value: []const u8) !ModelMode {
+    inline for (@typeInfo(ModelMode).@"enum".fields) |field| {
+        const mode: ModelMode = @enumFromInt(field.value);
+        if (std.mem.eql(u8, value, mode.label())) return mode;
+    }
+    std.debug.print("unknown model mode: {s}\n", .{value});
+    return error.InvalidOptionValue;
 }
 
 fn parsePositive(value: []const u8, label: []const u8) !usize {
@@ -172,6 +336,8 @@ fn printUsage() void {
         \\  --max-files N         benchmark only first N sorted .svga files
         \\  --max-input-bytes N   max bytes read per file, default libsvga limit
         \\  --max-output-bytes N  max inflated bytes per file, default libsvga limit
+        \\  --model-mode MODE     full, no-paths, no-render, metadata-only, copy-only, parse-only
+        \\  --alloc-stats         count allocator calls and backing bytes
         \\  --tsv PATH            write per-parse phase rows
         \\
     , .{});
@@ -187,7 +353,7 @@ fn run(config: Config, tsv_writer: ?*std.Io.Writer) !void {
     for (0..run_count) |iteration| {
         const measured = iteration >= config.warmup;
         for (fixtures.items) |fixture| {
-            const measurement = measureFixture(fixture, config.max_output_bytes) catch |err| {
+            const measurement = measureFixture(fixture, config) catch |err| {
                 std.debug.print("{s}: parse failed: {s}\n", .{ fixture.path, @errorName(err) });
                 return err;
             };
@@ -262,10 +428,23 @@ fn pathLessThan(_: void, lhs: []u8, rhs: []u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
 }
 
-fn measureFixture(fixture: Fixture, max_output_bytes: usize) !Measurement {
+fn measureFixture(fixture: Fixture, config: Config) !Measurement {
+    if (!config.alloc_stats) {
+        return measureFixtureWithAllocator(allocator, fixture, config);
+    }
+
+    var counting_allocator = CountingAllocator{ .child = allocator };
+    const measured_allocator = counting_allocator.allocator();
+    var measurement = try measureFixtureWithAllocator(measured_allocator, fixture, config);
+    measurement.allocation_stats = counting_allocator.stats;
+    return measurement;
+}
+
+fn measureFixtureWithAllocator(measured_allocator: std.mem.Allocator, fixture: Fixture, config: Config) !Measurement {
     const total_start = timestamp();
     var result = Measurement{
         .container = undefined,
+        .model_mode = config.model_mode,
         .input_bytes = fixture.bytes.len,
     };
 
@@ -273,45 +452,53 @@ fn measureFixture(fixture: Fixture, max_output_bytes: usize) !Measurement {
         result.container = .zip;
 
         const metadata_start = timestamp();
-        var metadata = try libsvga.parser.parseMovieMetadataWithOptions(allocator, fixture.bytes, .{
-            .max_output_bytes = max_output_bytes,
+        var metadata = try libsvga.parser.parseMovieMetadataWithOptions(measured_allocator, fixture.bytes, .{
+            .max_output_bytes = config.max_output_bytes,
         });
         result.zip_metadata_ns = elapsedSince(metadata_start);
-        defer metadata.deinit(allocator);
+        defer metadata.deinit(measured_allocator);
 
-        const model_start = timestamp();
-        var movie = try libsvga.model.Movie.initWithLimits(allocator, metadata.spec, .{});
-        result.model_ns = elapsedSince(model_start);
+        if (config.model_mode == .parse_only) {
+            result.checksum = checksumSpec(metadata.spec);
+        } else {
+            const model_start = timestamp();
+            var movie = try libsvga.model.Movie.initWithOptions(measured_allocator, metadata.spec, config.model_mode.initOptions());
+            result.model_ns = elapsedSince(model_start);
 
-        result.checksum = checksumMovie(&movie);
-        const destroy_start = timestamp();
-        movie.deinit(allocator);
-        result.destroy_ns = elapsedSince(destroy_start);
+            result.checksum = checksumMovie(&movie);
+            const destroy_start = timestamp();
+            movie.deinit(measured_allocator);
+            result.destroy_ns = elapsedSince(destroy_start);
+        }
     } else {
         if (!libsvga.parser.isZlibStream(fixture.bytes)) return error.InvalidData;
         result.container = .zlib;
 
         const inflate_start = timestamp();
-        const inflated = try libsvga.parser.inflateZlibForBenchmark(allocator, fixture.bytes, max_output_bytes);
+        const inflated = try libsvga.parser.inflateZlibForBenchmark(measured_allocator, fixture.bytes, config.max_output_bytes);
         result.inflate_ns = elapsedSince(inflate_start);
         result.inflated_bytes = inflated.len;
-        defer allocator.free(inflated);
+        defer measured_allocator.free(inflated);
 
-        var arena = std.heap.ArenaAllocator.init(allocator);
+        var arena = std.heap.ArenaAllocator.init(measured_allocator);
         defer arena.deinit();
 
         const proto_start = timestamp();
         const spec = try libsvga.parser.parseMovieProto(arena.allocator(), inflated);
         result.proto_ns = elapsedSince(proto_start);
 
-        const model_start = timestamp();
-        var movie = try libsvga.model.Movie.initWithLimits(allocator, spec, .{});
-        result.model_ns = elapsedSince(model_start);
+        if (config.model_mode == .parse_only) {
+            result.checksum = checksumSpec(spec);
+        } else {
+            const model_start = timestamp();
+            var movie = try libsvga.model.Movie.initWithOptions(measured_allocator, spec, config.model_mode.initOptions());
+            result.model_ns = elapsedSince(model_start);
 
-        result.checksum = checksumMovie(&movie);
-        const destroy_start = timestamp();
-        movie.deinit(allocator);
-        result.destroy_ns = elapsedSince(destroy_start);
+            result.checksum = checksumMovie(&movie);
+            const destroy_start = timestamp();
+            movie.deinit(measured_allocator);
+            result.destroy_ns = elapsedSince(destroy_start);
+        }
     }
 
     result.total_ns = elapsedSince(total_start);
@@ -345,6 +532,24 @@ fn checksumMovie(movie: *const libsvga.model.Movie) u64 {
     return checksum;
 }
 
+fn checksumSpec(spec: libsvga.model.MovieSpec) u64 {
+    var checksum: u64 = 0;
+    checksum +%= @intCast(spec.frames);
+    checksum +%= spec.image_count;
+    checksum +%= spec.sprite_count;
+    checksum +%= spec.audio_count;
+    checksum +%= spec.assets.len;
+    checksum +%= spec.sprites.len;
+    checksum +%= spec.audios.len;
+    for (spec.sprites) |sprite| {
+        checksum +%= sprite.frames.len;
+        for (sprite.frames) |frame| {
+            checksum +%= frame.shapes.len;
+        }
+    }
+    return checksum;
+}
+
 fn printSummary(config: Config, file_count: usize, totals: Totals) void {
     const stdout = std.debug;
     stdout.print(
@@ -363,6 +568,10 @@ fn printSummary(config: Config, file_count: usize, totals: Totals) void {
             totals.checksum,
         },
     );
+    stdout.print(
+        "model_mode={s} alloc_stats={}\n",
+        .{ config.model_mode.label(), config.alloc_stats },
+    );
     printPhase("inflate", totals.inflate_ns, totals);
     printPhase("protobuf", totals.proto_ns, totals);
     printPhase("zip_metadata", totals.zip_metadata_ns, totals);
@@ -370,6 +579,9 @@ fn printSummary(config: Config, file_count: usize, totals: Totals) void {
     printPhase("destroy", totals.destroy_ns, totals);
     const accounted = totals.inflate_ns + totals.proto_ns + totals.zip_metadata_ns + totals.model_ns + totals.destroy_ns;
     printPhase("unaccounted", totals.total_ns -| accounted, totals);
+    if (config.alloc_stats) {
+        printAllocationStats(totals);
+    }
 }
 
 fn printPhase(name: []const u8, ns: u64, totals: Totals) void {
@@ -382,6 +594,26 @@ fn printPhase(name: []const u8, ns: u64, totals: Totals) void {
             percent(ns, totals.total_ns),
         },
     );
+}
+
+fn printAllocationStats(totals: Totals) void {
+    const stats = totals.allocation_stats;
+    std.debug.print(
+        "allocations allocs_per_parse={d:.1} resizes_per_parse={d:.1} remaps_per_parse={d:.1} frees_per_parse={d:.1} alloc_bytes_per_parse={d:.1} peak_live_bytes_per_parse={d:.1}\n",
+        .{
+            countPerParse(stats.alloc_count, totals.parses),
+            countPerParse(stats.resize_count, totals.parses),
+            countPerParse(stats.remap_count, totals.parses),
+            countPerParse(stats.free_count, totals.parses),
+            countPerParse(stats.alloc_bytes, totals.parses),
+            countPerParse(stats.peak_live_bytes, totals.parses),
+        },
+    );
+}
+
+fn countPerParse(count: usize, parses: usize) f64 {
+    if (parses == 0) return 0;
+    return @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(parses));
 }
 
 fn ms(ns: u64) f64 {
@@ -404,17 +636,18 @@ fn mb(bytes: usize) f64 {
 
 fn writeTsvHeader(writer: *std.Io.Writer) !void {
     try writer.writeAll(
-        "iteration\tpath\tcontainer\tinput_bytes\tinflated_bytes\ttotal_ns\tinflate_ns\tprotobuf_ns\tzip_metadata_ns\tmodel_init_ns\tdestroy_ns\tchecksum\n",
+        "iteration\tpath\tcontainer\tmodel_mode\tinput_bytes\tinflated_bytes\ttotal_ns\tinflate_ns\tprotobuf_ns\tzip_metadata_ns\tmodel_init_ns\tdestroy_ns\tchecksum\talloc_count\tresize_count\tremap_count\tfree_count\talloc_bytes\tpeak_live_bytes\n",
     );
 }
 
 fn writeTsvRow(writer: *std.Io.Writer, iteration: usize, fixture: Fixture, measurement: Measurement) !void {
     try writer.print(
-        "{}\t{s}\t{s}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        "{}\t{s}\t{s}\t{s}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         .{
             iteration,
             fixture.path,
             measurement.container.label(),
+            measurement.model_mode.label(),
             measurement.input_bytes,
             measurement.inflated_bytes,
             measurement.total_ns,
@@ -424,6 +657,12 @@ fn writeTsvRow(writer: *std.Io.Writer, iteration: usize, fixture: Fixture, measu
             measurement.model_ns,
             measurement.destroy_ns,
             measurement.checksum,
+            measurement.allocation_stats.alloc_count,
+            measurement.allocation_stats.resize_count,
+            measurement.allocation_stats.remap_count,
+            measurement.allocation_stats.free_count,
+            measurement.allocation_stats.alloc_bytes,
+            measurement.allocation_stats.peak_live_bytes,
         },
     );
 }

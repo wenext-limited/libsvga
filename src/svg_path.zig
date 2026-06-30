@@ -338,9 +338,52 @@ const Parser = struct {
             }
         }
 
-        return std.fmt.parseFloat(f32, self.data[start..self.index]) catch null;
+        return parsePathNumber(self.data[start..self.index]);
     }
 };
+
+fn parsePathNumber(data: []const u8) ?f32 {
+    if (data.len == 0) return null;
+
+    var index: usize = 0;
+    var sign: f64 = 1;
+    if (data[index] == '+' or data[index] == '-') {
+        if (data[index] == '-') sign = -1;
+        index += 1;
+        if (index == data.len) return null;
+    }
+
+    var value: f64 = 0;
+    var digit_count: usize = 0;
+    while (index < data.len and std.ascii.isDigit(data[index])) : (index += 1) {
+        if (digit_count >= 12) return parsePathNumberFallback(data);
+        value = value * 10 + @as(f64, @floatFromInt(data[index] - '0'));
+        digit_count += 1;
+    }
+
+    if (index < data.len and data[index] == '.') {
+        index += 1;
+        var scale: f64 = 1;
+        while (index < data.len and std.ascii.isDigit(data[index])) : (index += 1) {
+            if (digit_count >= 15) return parsePathNumberFallback(data);
+            scale *= 10;
+            value += @as(f64, @floatFromInt(data[index] - '0')) / scale;
+            digit_count += 1;
+        }
+    }
+
+    if (digit_count == 0) return null;
+    if (index != data.len) return parsePathNumberFallback(data);
+
+    const signed = value * sign;
+    if (!std.math.isFinite(signed)) return parsePathNumberFallback(data);
+    if (signed < -std.math.floatMax(f32) or signed > std.math.floatMax(f32)) return parsePathNumberFallback(data);
+    return @floatCast(signed);
+}
+
+fn parsePathNumberFallback(data: []const u8) ?f32 {
+    return std.fmt.parseFloat(f32, data) catch null;
+}
 
 fn isNumberStart(char: u8) bool {
     return char == '+' or char == '-' or char == '.' or std.ascii.isDigit(char);
@@ -395,4 +438,9 @@ test "SVG path parser handles compact numbers and smooth curves" {
     try std.testing.expectEqual(@as(f32, 30), commands[4].p0_y);
     try std.testing.expectEqual(@as(f32, 40), commands[4].p1_x);
     try std.testing.expectEqual(@as(f32, 40), commands[4].p1_y);
+}
+
+test "SVG path fast number parser falls back for exponents" {
+    try std.testing.expectEqual(try std.fmt.parseFloat(f32, "1.5e2"), parsePathNumber("1.5e2").?);
+    try std.testing.expectEqual(try std.fmt.parseFloat(f32, "-.25"), parsePathNumber("-.25").?);
 }

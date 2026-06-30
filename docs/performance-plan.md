@@ -28,6 +28,7 @@ cd /Users/wendell/Developer/WeNext/svga/libsvga
 zig build -Doptimize=ReleaseFast phase-bench -- \
   --warmup 1 \
   --iterations 3 \
+  --model-mode full \
   --tsv /private/tmp/svga-phase-bench.tsv \
   /private/tmp/svga-cos-benchmark-hardlinks-1782807332
 ```
@@ -41,6 +42,21 @@ reports:
 - `model_init`: copy into owned `Movie` plus metadata/path/render table build.
 - `destroy`: `Movie.deinit`.
 - `unaccounted`: timer overhead plus loop/control flow not covered above.
+
+Investigation-only options:
+
+- `--model-mode full`: current eager production behavior.
+- `--model-mode no-paths`: skip parsed SVG path command tables.
+- `--model-mode no-render`: skip render command/item tables and visual frame
+  indices.
+- `--model-mode metadata-only`: keep metadata records but skip path commands and
+  render/visual tables.
+- `--model-mode copy-only`: copy the parser `MovieSpec` into owned model
+  arrays, but skip all derived tables.
+- `--model-mode parse-only`: stop after inflate/protobuf and do not construct
+  `Movie`.
+- `--alloc-stats`: count allocator calls and backing bytes. Use this for
+  allocation shape, not as the primary timing protocol.
 
 ## Current Baseline
 
@@ -112,6 +128,79 @@ The model-init micro-optimization reduced `model_init` from about
 617,861 ns/parse to about 443,602 ns/parse on the portable backend, while the
 Darwin default backend change accounts for the largest total parse win.
 
+After adding model-mode and allocation instrumentation, the candidate
+investigation measured the following Darwin system-zlib runs over the same COS
+corpus:
+
+```text
+# full, before SVG number fast path, early run
+total_ns_per_parse=1608567.5
+protobuf_ns_per_parse=259714.3
+model_init_ns_per_parse=389603.6
+destroy_ns_per_parse=79784.9
+
+# direct A/B under later machine load, std.fmt.parseFloat
+total_ns_per_parse=1690398.9
+protobuf_ns_per_parse=270014.6
+model_init_ns_per_parse=420279.4
+destroy_ns_per_parse=86290.4
+
+# direct A/B under later machine load, SVG number fast path
+total_ns_per_parse=1653597.0-1669661.8
+protobuf_ns_per_parse=266306.8-268448.9
+model_init_ns_per_parse=399215.4-406392.6
+destroy_ns_per_parse=84762.2-86583.6
+
+# no-render
+total_ns_per_parse=1562100.3
+model_init_ns_per_parse=340351.2
+
+# metadata-only
+total_ns_per_parse=1495101.2
+model_init_ns_per_parse=281715.1
+
+# copy-only
+total_ns_per_parse=1338551.9
+model_init_ns_per_parse=162199.4
+```
+
+Allocator-stat passes with `--warmup 0 --iterations 1 --alloc-stats` measured:
+
+```text
+# parse-only
+allocs_per_parse=7.8
+alloc_bytes_per_parse=4345757.3
+peak_live_bytes_per_parse=3186745.6
+protobuf_ns_per_parse=243183.1
+
+# copy-only
+allocs_per_parse=7859.6
+alloc_bytes_per_parse=5720942.5
+peak_live_bytes_per_parse=4142932.4
+
+# full
+allocs_per_parse=8070.6
+alloc_bytes_per_parse=6795337.8
+peak_live_bytes_per_parse=5117865.1
+```
+
+Conclusions:
+
+- Arena/string-pool backed `Movie` ownership is the strongest remaining Zig-side
+  candidate. Parser-only uses about 8 backing allocations per parse; model
+  ownership copying raises that to about 7,860 allocations before derived
+  tables, so the current per-frame/per-shape ownership boundary is expensive.
+- Lazy render/path derived tables are worthwhile as an API option, not as an
+  unconditional replacement. `metadata-only` saves about 108 us/parse in
+  `model_init`; `copy-only` shows a 162 us/parse ownership floor.
+- SVG number parsing is a modest average win and a large outlier win. Direct
+  A/B runs under the same later machine load showed about 14-21 us/parse lower
+  `model_init`, and several vector-heavy files dropped by 1-2.4 ms in model
+  initialization.
+- Protobuf pre-counting is rejected for now. A build-flag experiment that
+  pre-counted repeated fields before reserving `ArrayList` capacity increased
+  parse-only protobuf time from about 243 us/parse to about 303 us/parse.
+
 The default-run TSV was written to:
 
 ```text
@@ -122,10 +211,10 @@ Example outlier commands:
 
 ```sh
 # Largest average total parse time by file.
-awk -F '\t' 'NR>1 {n[$2]++; total[$2]+=$6; inflate[$2]+=$7; proto[$2]+=$8; model[$2]+=$10; bytes[$2]=$4; inflated[$2]=$5} END {for (p in total) printf "%.0f\t%.0f\t%.0f\t%.0f\t%s\t%s\t%s\n", total[p]/n[p], inflate[p]/n[p], proto[p]/n[p], model[p]/n[p], bytes[p], inflated[p], p}' /private/tmp/svga-phase-bench.tsv | sort -nr | head
+awk -F '\t' 'NR>1 {n[$2]++; total[$2]+=$7; inflate[$2]+=$8; proto[$2]+=$9; model[$2]+=$11; bytes[$2]=$5; inflated[$2]=$6} END {for (p in total) printf "%.0f\t%.0f\t%.0f\t%.0f\t%s\t%s\t%s\n", total[p]/n[p], inflate[p]/n[p], proto[p]/n[p], model[p]/n[p], bytes[p], inflated[p], p}' /private/tmp/svga-phase-bench.tsv | sort -nr | head
 
 # Largest average model initialization time by file.
-awk -F '\t' 'NR>1 {n[$2]++; model[$2]+=$10; total[$2]+=$6; bytes[$2]=$4; inflated[$2]=$5} END {for (p in model) printf "%.0f\t%.0f\t%s\t%s\t%s\n", model[p]/n[p], total[p]/n[p], bytes[p], inflated[p], p}' /private/tmp/svga-phase-bench.tsv | sort -nr | head
+awk -F '\t' 'NR>1 {n[$2]++; model[$2]+=$11; total[$2]+=$7; bytes[$2]=$5; inflated[$2]=$6} END {for (p in model) printf "%.0f\t%.0f\t%s\t%s\t%s\n", model[p]/n[p], total[p]/n[p], bytes[p], inflated[p], p}' /private/tmp/svga-phase-bench.tsv | sort -nr | head
 ```
 
 Current top model-init outliers are mostly under `background/sync` and
@@ -143,9 +232,12 @@ Current top model-init outliers are mostly under `background/sync` and
 
 2. **Reduce ownership-boundary copies**
    - Current flow is `inflate -> parser arena MovieSpec -> owned Movie`.
-   - Investigate letting `Movie` own an arena/string pool for metadata strings,
-     sprite frame arrays, and shape/path strings.
+   - Let `Movie` own an arena/string pool for metadata strings, sprite frame
+     arrays, and shape/path strings.
    - Keep large image/audio asset bytes separate if needed.
+   - Evidence: `parse-only` averages about 8 backing allocations per parse,
+     while `copy-only` averages about 7,860; this is now the primary remaining
+     model-side target.
 
 3. **Lazy or configurable render table construction**
    - `Movie.initWithLimits` eagerly builds metadata tables, parsed SVG path
@@ -154,13 +246,18 @@ Current top model-init outliers are mostly under `background/sync` and
    - Consider parse options for metadata-only, bitmap-table-only, and full
      renderer-ready modes.
    - Preserve the current eager default if Swift rendering depends on it.
+   - Evidence: `metadata-only` saves about 108 us/parse in `model_init`;
+     `no-render` alone saves about 49 us/parse.
 
 4. **Path parsing costs**
    - `buildMetadataTables` parses every clip path and vector shape path during
      `Movie` initialization.
    - Use phase benchmark plus TSV rows to identify whether vector-heavy files
      dominate `model_init`.
-   - Consider lazy path parsing or a path-command cache keyed by source slice.
+   - Consider lazy path parsing or a path-command cache keyed by source slice
+     for vector-heavy files.
+   - Status: fast decimal parsing is implemented and helps outliers; average
+     corpus win is modest because most files are not path-heavy.
 
 5. **Render table algorithm**
    - `buildRenderData` currently counts commands/items, allocates exact tables,
@@ -171,13 +268,15 @@ Current top model-init outliers are mostly under `background/sync` and
 6. **Array allocation strategy during protobuf parse**
    - Parser uses `ArrayList` append for assets, sprites, frames, audios, and
      shapes.
-   - A cheap pre-count pass over length-delimited repeated fields may reduce
-     growth allocations for large files.
+   - Status: pre-count pass is rejected for now. It reduced no meaningful
+     allocation pressure and increased parse-only protobuf time by about
+     60 us/parse.
 
 7. **Allocator measurement**
-   - Add a counting allocator or Instruments allocation profile around
-     `svga_phase_bench`.
-   - Track allocation count/bytes by phase before changing data ownership.
+   - `svga_phase_bench --alloc-stats` now tracks allocation count/bytes for
+     candidate comparison.
+   - A future per-phase allocator snapshot would make arena/string-pool work
+     easier to validate.
 
 8. **Benchmark reproducibility**
    - Keep fixture path order sorted.

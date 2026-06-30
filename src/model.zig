@@ -29,6 +29,18 @@ pub const ModelLimits = struct {
     max_total_path_commands: usize = default_max_total_path_commands,
 };
 
+pub const MovieInitOptions = struct {
+    limits: ModelLimits = .{},
+    build_metadata_tables: bool = true,
+    build_path_commands: bool = true,
+    build_render_data: bool = true,
+    build_visual_frame_indices: bool = true,
+};
+
+fn emptySlice(comptime T: type) []T {
+    return @constCast(&[_]T{});
+}
+
 /// Borrowed movie description produced by the parser before ownership is moved
 /// into Movie. Slices in this struct are valid as long as the parser arena lives.
 pub const MovieSpec = struct {
@@ -274,6 +286,20 @@ pub const MetadataTables = struct {
     shape_path_commands: []PathCommand,
     shape_path_command_ranges: []RenderRange,
 
+    fn empty() MetadataTables {
+        return .{
+            .sprite_records = emptySlice(SpriteRecord),
+            .frame_records = emptySlice(FrameRecord),
+            .sprite_frame_ranges = emptySlice(RenderRange),
+            .shape_records = emptySlice(ShapeRecord),
+            .frame_shape_ranges = emptySlice(RenderRange),
+            .clip_path_commands = emptySlice(PathCommand),
+            .frame_clip_path_command_ranges = emptySlice(RenderRange),
+            .shape_path_commands = emptySlice(PathCommand),
+            .shape_path_command_ranges = emptySlice(RenderRange),
+        };
+    }
+
     fn deinit(self: MetadataTables, allocator: std.mem.Allocator) void {
         allocator.free(self.sprite_records);
         allocator.free(self.frame_records);
@@ -292,6 +318,15 @@ const RenderData = struct {
     command_ranges: []RenderRange,
     items: []RenderItem,
     item_ranges: []RenderRange,
+
+    fn empty() RenderData {
+        return .{
+            .commands = emptySlice(RenderCommand),
+            .command_ranges = emptySlice(RenderRange),
+            .items = emptySlice(RenderItem),
+            .item_ranges = emptySlice(RenderRange),
+        };
+    }
 
     fn deinit(self: RenderData, allocator: std.mem.Allocator) void {
         allocator.free(self.commands);
@@ -343,7 +378,11 @@ pub const Movie = struct {
     }
 
     pub fn initWithLimits(allocator: std.mem.Allocator, spec: MovieSpec, limits: ModelLimits) !Movie {
-        try validateSpecWithLimits(spec, limits);
+        return initWithOptions(allocator, spec, .{ .limits = limits });
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, spec: MovieSpec, options: MovieInitOptions) !Movie {
+        try validateSpecWithLimits(spec, options.limits);
 
         var assets = try allocator.alloc(Asset, spec.assets.len);
         errdefer allocator.free(assets);
@@ -384,16 +423,25 @@ pub const Movie = struct {
             initialized_audios += 1;
         }
 
-        const metadata = try buildMetadataTables(allocator, sprites, limits);
+        const metadata = if (options.build_metadata_tables)
+            try buildMetadataTables(allocator, sprites, options.limits, options.build_path_commands)
+        else
+            MetadataTables.empty();
         errdefer metadata.deinit(allocator);
 
-        const render_data = try buildRenderData(allocator, sprites, spec.frames);
+        const render_data = if (options.build_render_data)
+            try buildRenderData(allocator, sprites, spec.frames)
+        else
+            RenderData.empty();
         errdefer render_data.deinit(allocator);
-        const visual_frame_indices = try buildVisualFrameIndices(
-            allocator,
-            render_data.items,
-            render_data.item_ranges,
-        );
+        const visual_frame_indices = if (options.build_visual_frame_indices and options.build_render_data)
+            try buildVisualFrameIndices(
+                allocator,
+                render_data.items,
+                render_data.item_ranges,
+            )
+        else
+            emptySlice(u32);
         errdefer allocator.free(visual_frame_indices);
 
         return .{
@@ -727,6 +775,7 @@ fn buildMetadataTables(
     allocator: std.mem.Allocator,
     sprites: []const Sprite,
     limits: ModelLimits,
+    build_path_commands: bool,
 ) !MetadataTables {
     var frame_total: usize = 0;
     var shape_total: usize = 0;
@@ -779,6 +828,7 @@ fn buildMetadataTables(
 
             const clip_path_command_start = clip_path_commands.items.len;
             const clip_path_command_count = count: {
+                if (!build_path_commands) break :count 0;
                 if (frame.clip_path.len == 0) break :count 0;
                 const parsed_clip_path_commands = try svg_path.parse(allocator, frame.clip_path);
                 defer allocator.free(parsed_clip_path_commands);
@@ -795,6 +845,7 @@ fn buildMetadataTables(
 
                 const shape_path_command_start = shape_path_commands.items.len;
                 const shape_path_command_count = count: {
+                    if (!build_path_commands) break :count 0;
                     if (shape.shape_type != .shape) break :count 0;
                     if (shape.path_data.len == 0) break :count 0;
                     const parsed_shape_path_commands = try svg_path.parse(allocator, shape.path_data);
