@@ -81,6 +81,12 @@ pub const ParseOptions = extern struct {
     max_total_path_commands: usize,
 };
 
+pub const ParseModelMode = enum(i32) {
+    full = 0,
+    no_render = 1,
+    metadata_only = 2,
+};
+
 pub const Rect = extern struct {
     x: f32,
     y: f32,
@@ -884,6 +890,27 @@ export fn svga_movie_parse_with_options(
     return statusCode(.ok);
 }
 
+export fn svga_movie_parse_with_options_and_model_mode(
+    bytes: ?[*]const u8,
+    byte_count: usize,
+    parse_options: ?*const ParseOptions,
+    model_mode: i32,
+    out_movie: ?*?*MovieHandle,
+) callconv(.c) i32 {
+    const out = out_movie orelse return statusCode(.null_argument);
+    out.* = null;
+
+    if (bytes == null and byte_count != 0) return statusCode(.null_argument);
+    if (byte_count == 0) return statusCode(.invalid_argument);
+
+    const mode = parseModelModeFromC(model_mode) orelse return statusCode(.invalid_argument);
+    const options = parseOptionsFromCWithModelMode(parse_options, mode) catch return statusCode(.invalid_argument);
+    const input = bytes.?[0..byte_count];
+    const movie = core.parseMovieWithOptions(allocator, input, options) catch |err| return statusCode(statusFromError(err));
+    out.* = handleFromMovie(movie);
+    return statusCode(.ok);
+}
+
 export fn svga_movie_parse_file(path_utf8: ?[*:0]const u8, out_movie: ?*?*MovieHandle) callconv(.c) i32 {
     return svga_movie_parse_file_with_options(path_utf8, null, out_movie);
 }
@@ -903,6 +930,28 @@ export fn svga_movie_parse_file_with_options(
     if (path.len == 0) return statusCode(.invalid_argument);
 
     const options = parseFileOptionsFromC(parse_options) catch return statusCode(.invalid_argument);
+    const movie = core.parseMovieFile(allocator, path, options) catch |err| return statusCode(statusFromError(err));
+    out.* = handleFromMovie(movie);
+    return statusCode(.ok);
+}
+
+export fn svga_movie_parse_file_with_options_and_model_mode(
+    path_utf8: ?[*:0]const u8,
+    parse_options: ?*const ParseOptions,
+    model_mode: i32,
+    out_movie: ?*?*MovieHandle,
+) callconv(.c) i32 {
+    const out = out_movie orelse return statusCode(.null_argument);
+    out.* = null;
+
+    if (!comptime has_filesystem) return statusCode(.unsupported);
+
+    const path_ptr = path_utf8 orelse return statusCode(.null_argument);
+    const path = std.mem.span(path_ptr);
+    if (path.len == 0) return statusCode(.invalid_argument);
+
+    const mode = parseModelModeFromC(model_mode) orelse return statusCode(.invalid_argument);
+    const options = parseFileOptionsFromCWithModelMode(parse_options, mode) catch return statusCode(.invalid_argument);
     const movie = core.parseMovieFile(allocator, path, options) catch |err| return statusCode(statusFromError(err));
     out.* = handleFromMovie(movie);
     return statusCode(.ok);
@@ -1253,6 +1302,15 @@ fn modelLimitsFromC(provided: *const ParseOptions) model.ModelLimits {
     };
 }
 
+fn parseModelModeFromC(model_mode: i32) ?core.ParseModelMode {
+    return switch (model_mode) {
+        @intFromEnum(ParseModelMode.full) => .full,
+        @intFromEnum(ParseModelMode.no_render) => .no_render,
+        @intFromEnum(ParseModelMode.metadata_only) => .metadata_only,
+        else => null,
+    };
+}
+
 fn parseOptionsFromC(parse_options: ?*const ParseOptions) error{InvalidArgument}!core.ParseOptions {
     var options: core.ParseOptions = .{};
     if (parse_options) |provided| {
@@ -1262,6 +1320,15 @@ fn parseOptionsFromC(parse_options: ?*const ParseOptions) error{InvalidArgument}
         }
         options.model_limits = modelLimitsFromC(provided);
     }
+    return options;
+}
+
+fn parseOptionsFromCWithModelMode(
+    parse_options: ?*const ParseOptions,
+    model_mode: core.ParseModelMode,
+) error{InvalidArgument}!core.ParseOptions {
+    var options = try parseOptionsFromC(parse_options);
+    options.model_mode = model_mode;
     return options;
 }
 
@@ -1277,6 +1344,15 @@ fn parseFileOptionsFromC(parse_options: ?*const ParseOptions) error{InvalidArgum
         }
         options.model_limits = modelLimitsFromC(provided);
     }
+    return options;
+}
+
+fn parseFileOptionsFromCWithModelMode(
+    parse_options: ?*const ParseOptions,
+    model_mode: core.ParseModelMode,
+) error{InvalidArgument}!core.ParseFileOptions {
+    var options = try parseFileOptionsFromC(parse_options);
+    options.model_mode = model_mode;
     return options;
 }
 
@@ -2418,6 +2494,99 @@ test "C API parse options expose defaults and override model limits" {
     defer svga_movie_destroy(out_movie);
 }
 
+test "C API parse model mode keeps metadata and skips lazy tables" {
+    try std.testing.expectEqual(@as(i32, 0), @intFromEnum(ParseModelMode.full));
+    try std.testing.expectEqual(@as(i32, 1), @intFromEnum(ParseModelMode.no_render));
+    try std.testing.expectEqual(@as(i32, 2), @intFromEnum(ParseModelMode.metadata_only));
+
+    const proto = [_]u8{
+        0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
+        0x12, 0x0e, 0x0d, 0x00, 0x00, 0xa0, 0x43,
+        0x15, 0x00, 0x00, 0x70, 0x43, 0x18, 0x1e,
+        0x20, 0x3c, 0x1a, 0x0d, 0x0a, 0x04, 'h',
+        'e',  'r',  'o',  0x12, 0x05, 'h',  'e',
+        'r',  'o',  '0',  0x22, 0x18, 0x0a, 0x04,
+        'h',  'e',  'r',  'o',  0x12, 0x10, 0x0d,
+        0x00, 0x00, 0x80, 0x3f, 0x2a, 0x09, 0x08,
+        0x01, 0x1a, 0x05, 0x0d, 0x00, 0x00, 0x20,
+        0x41,
+    };
+
+    const zip = try storedZip(std.testing.allocator, "movie.binary", &proto);
+    defer std.testing.allocator.free(zip);
+
+    var invalid_movie: ?*MovieHandle = undefined;
+    try std.testing.expectEqual(
+        statusCode(.invalid_argument),
+        svga_movie_parse_with_options_and_model_mode(zip.ptr, zip.len, null, 99, &invalid_movie),
+    );
+    try std.testing.expect(invalid_movie == null);
+
+    var out_movie: ?*MovieHandle = null;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_parse_with_options_and_model_mode(
+            zip.ptr,
+            zip.len,
+            null,
+            @intFromEnum(ParseModelMode.metadata_only),
+            &out_movie,
+        ),
+    );
+    defer svga_movie_destroy(out_movie);
+
+    var info: MovieInfo = undefined;
+    try std.testing.expectEqual(statusCode(.ok), svga_movie_get_info(out_movie, &info));
+    try std.testing.expectEqual(@as(i32, 60), info.frames);
+
+    var shape_table: ?[*]const ShapeInfo = null;
+    var shape_table_count: usize = 0;
+    var frame_shape_ranges: ?[*]const RenderRangeInfo = null;
+    var frame_shape_range_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_shape_table(
+            out_movie,
+            &shape_table,
+            &shape_table_count,
+            &frame_shape_ranges,
+            &frame_shape_range_count,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), shape_table_count);
+    try std.testing.expect(shape_table != null);
+    try std.testing.expectEqual(@as(usize, 1), frame_shape_range_count);
+    try std.testing.expect(frame_shape_ranges != null);
+
+    var command_table: ?[*]const RenderCommandInfo = @ptrFromInt(@alignOf(RenderCommandInfo));
+    var command_count: usize = 999;
+    var command_ranges: ?[*]const RenderRangeInfo = @ptrFromInt(@alignOf(RenderRangeInfo));
+    var command_range_count: usize = 999;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_render_command_table(
+            out_movie,
+            &command_table,
+            &command_count,
+            &command_ranges,
+            &command_range_count,
+        ),
+    );
+    try std.testing.expect(command_table == null);
+    try std.testing.expectEqual(@as(usize, 0), command_count);
+    try std.testing.expect(command_ranges == null);
+    try std.testing.expectEqual(@as(usize, 0), command_range_count);
+
+    var visual_frames: ?[*]const u32 = @ptrFromInt(@alignOf(u32));
+    var visual_frame_count: usize = 999;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_visual_frame_table(out_movie, &visual_frames, &visual_frame_count),
+    );
+    try std.testing.expect(visual_frames == null);
+    try std.testing.expectEqual(@as(usize, 0), visual_frame_count);
+}
+
 test "C API parses a movie from a filesystem path" {
     const proto = [_]u8{
         0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
@@ -2445,6 +2614,85 @@ test "C API parses a movie from a filesystem path" {
     var info: MovieInfo = undefined;
     try std.testing.expectEqual(statusCode(.ok), svga_movie_get_info(out_movie, &info));
     try std.testing.expectEqual(@as(i32, 60), info.frames);
+}
+
+test "C API parse file model mode skips render tables" {
+    if (!comptime has_filesystem) return error.SkipZigTest;
+
+    const proto = [_]u8{
+        0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
+        0x12, 0x0e, 0x0d, 0x00, 0x00, 0xa0, 0x43,
+        0x15, 0x00, 0x00, 0x70, 0x43, 0x18, 0x1e,
+        0x20, 0x3c, 0x1a, 0x0d, 0x0a, 0x04, 'h',
+        'e',  'r',  'o',  0x12, 0x05, 'h',  'e',
+        'r',  'o',  '0',  0x22, 0x18, 0x0a, 0x04,
+        'h',  'e',  'r',  'o',  0x12, 0x10, 0x0d,
+        0x00, 0x00, 0x80, 0x3f, 0x2a, 0x09, 0x08,
+        0x01, 0x1a, 0x05, 0x0d, 0x00, 0x00, 0x20,
+        0x41,
+    };
+
+    const zip = try storedZip(std.testing.allocator, "movie.binary", &proto);
+    defer std.testing.allocator.free(zip);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "fixture.svga", .data = zip });
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "fixture.svga");
+    defer std.testing.allocator.free(path);
+    const path_z = try std.testing.allocator.dupeZ(u8, path);
+    defer std.testing.allocator.free(path_z);
+
+    var out_movie: ?*MovieHandle = null;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_parse_file_with_options_and_model_mode(
+            path_z.ptr,
+            null,
+            @intFromEnum(ParseModelMode.no_render),
+            &out_movie,
+        ),
+    );
+    defer svga_movie_destroy(out_movie);
+
+    var frame_table: ?[*]const FrameInfo = null;
+    var frame_table_count: usize = 0;
+    var sprite_frame_ranges: ?[*]const RenderRangeInfo = null;
+    var sprite_frame_range_count: usize = 0;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_frame_table(
+            out_movie,
+            &frame_table,
+            &frame_table_count,
+            &sprite_frame_ranges,
+            &sprite_frame_range_count,
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), frame_table_count);
+    try std.testing.expect(frame_table != null);
+    try std.testing.expectEqual(@as(usize, 1), sprite_frame_range_count);
+    try std.testing.expect(sprite_frame_ranges != null);
+
+    var item_table: ?[*]const RenderItemInfo = @ptrFromInt(@alignOf(RenderItemInfo));
+    var item_count: usize = 999;
+    var item_ranges: ?[*]const RenderRangeInfo = @ptrFromInt(@alignOf(RenderRangeInfo));
+    var item_range_count: usize = 999;
+    try std.testing.expectEqual(
+        statusCode(.ok),
+        svga_movie_get_render_item_table(
+            out_movie,
+            &item_table,
+            &item_count,
+            &item_ranges,
+            &item_range_count,
+        ),
+    );
+    try std.testing.expect(item_table == null);
+    try std.testing.expectEqual(@as(usize, 0), item_count);
+    try std.testing.expect(item_ranges == null);
+    try std.testing.expectEqual(@as(usize, 0), item_range_count);
 }
 
 test "C API downloader validates URL and options before network access" {

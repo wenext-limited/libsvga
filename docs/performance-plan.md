@@ -80,6 +80,17 @@ objc/SVGAPlayer-iOS files=3374 parses=10122 ns_per_parse=4814519.5
 This puts native `libsvga` about 2.65x faster than the archived Objective-C
 parser on the COS zlib corpus.
 
+After arena-backed `Movie` ownership and public lazy model modes, the same
+external comparison measured:
+
+```text
+zig/libsvga files=3374 parses=10122 ns_per_parse=1661328.3
+objc/SVGAPlayer-iOS files=3374 parses=10122 ns_per_parse=4571168.0
+```
+
+This puts native `libsvga` about 2.75x faster than the archived Objective-C
+parser on this run.
+
 After adding `svga_phase_bench`, the default self-contained Zig std-flate build
 over the same corpus measured:
 
@@ -179,6 +190,9 @@ alloc_bytes_per_parse=5720942.5
 peak_live_bytes_per_parse=4142932.4
 
 # full
+total_ns_per_parse=1682700.5
+model_init_ns_per_parse=389460.9
+destroy_ns_per_parse=98316.6
 allocs_per_parse=8070.6
 alloc_bytes_per_parse=6795337.8
 peak_live_bytes_per_parse=5117865.1
@@ -200,6 +214,47 @@ Conclusions:
 - Protobuf pre-counting is rejected for now. A build-flag experiment that
   pre-counted repeated fields before reserving `ArrayList` capacity increased
   parse-only protobuf time from about 243 us/parse to about 303 us/parse.
+
+After integrating arena-backed ownership and exposing lazy model modes, the same
+internal phase benchmark measured:
+
+```text
+# full
+total_ns_per_parse=1482222.2
+inflate_ns_per_parse=858128.8
+protobuf_ns_per_parse=255804.9
+model_init_ns_per_parse=325751.2
+destroy_ns_per_parse=20820.7
+
+# no-render
+total_ns_per_parse=1505531.4
+model_init_ns_per_parse=289731.7
+destroy_ns_per_parse=20144.4
+
+# metadata-only
+total_ns_per_parse=1425766.2
+model_init_ns_per_parse=252487.5
+destroy_ns_per_parse=22435.7
+```
+
+The full-mode allocation-stat pass measured:
+
+```text
+total_ns_per_parse=1504319.5
+model_init_ns_per_parse=335644.6
+destroy_ns_per_parse=21750.1
+allocs_per_parse=215.5
+alloc_bytes_per_parse=7653016.5
+peak_live_bytes_per_parse=5943092.0
+```
+
+Compared with the pre-arena full-mode allocator pass, allocation calls dropped
+from about 8,070 to about 216 per parse and `destroy` dropped from about
+98.3 us/parse to about 21.8 us/parse. The normal phase runs show the same
+teardown improvement, from about 85 us/parse to about 21 us/parse. The
+arena-backed model intentionally
+trades fewer allocator calls and much cheaper teardown for larger arena chunk
+retention during a parsed movie's lifetime.
 
 The default-run TSV was written to:
 
@@ -230,24 +285,23 @@ Current top model-init outliers are mostly under `background/sync` and
      artifacts and WASM.
    - Test `libdeflate` separately before adding a dependency.
 
-2. **Reduce ownership-boundary copies**
+2. **Reduce ownership-boundary copies** — implemented
    - Current flow is `inflate -> parser arena MovieSpec -> owned Movie`.
-   - Let `Movie` own an arena/string pool for metadata strings, sprite frame
-     arrays, and shape/path strings.
+   - `Movie` now owns an arena for metadata strings, sprite frame arrays, shape
+     arrays, path strings, and derived tables.
    - Keep large image/audio asset bytes separate if needed.
    - Evidence: `parse-only` averages about 8 backing allocations per parse,
-     while `copy-only` averages about 7,860; this is now the primary remaining
-     model-side target.
+     while old `copy-only` averaged about 7,860. Integrated full-mode parsing
+     now averages about 216 allocation calls per parse.
 
-3. **Lazy or configurable render table construction**
+3. **Lazy or configurable render table construction** — implemented for parse APIs
    - `Movie.initWithLimits` eagerly builds metadata tables, parsed SVG path
      command tables, render command tables, render item tables, and visual frame
      indices.
-   - Consider parse options for metadata-only, bitmap-table-only, and full
-     renderer-ready modes.
-   - Preserve the current eager default if Swift rendering depends on it.
-   - Evidence: `metadata-only` saves about 108 us/parse in `model_init`;
-     `no-render` alone saves about 49 us/parse.
+   - Existing parse APIs preserve the full eager default.
+   - New Zig/C parse modes expose `full`, `no_render`, and `metadata_only`.
+   - Evidence: with arena ownership, `metadata-only` reduces `model_init` from
+     about 326 us/parse to about 252 us/parse.
 
 4. **Path parsing costs**
    - `buildMetadataTables` parses every clip path and vector shape path during
@@ -279,7 +333,10 @@ Current top model-init outliers are mostly under `background/sync` and
      easier to validate.
 
 8. **Benchmark reproducibility**
-   - Keep fixture path order sorted.
+   - For `svga_phase_bench`, keep fixture path order sorted.
    - Run warmup iterations.
    - Report machine load/throttling when numbers vary.
    - Use TSV output for file-level outlier analysis.
+   - The external C/Objective-C harness currently uses filesystem traversal
+     order and no separate warmup phase; keep those numbers separate from
+     `svga_phase_bench` timings unless the harness protocol is changed.

@@ -41,6 +41,26 @@ fn emptySlice(comptime T: type) []T {
     return @constCast(&[_]T{});
 }
 
+fn emptyZSlice() [:0]u8 {
+    const empty: [:0]const u8 = "";
+    return @constCast(empty);
+}
+
+fn allocSlice(comptime T: type, allocator: std.mem.Allocator, len: usize) ![]T {
+    if (len == 0) return emptySlice(T);
+    return allocator.alloc(T, len);
+}
+
+fn dupeSlice(comptime T: type, allocator: std.mem.Allocator, values: []const T) ![]T {
+    if (values.len == 0) return emptySlice(T);
+    return allocator.dupe(T, values);
+}
+
+fn dupeZSlice(allocator: std.mem.Allocator, value: []const u8) ![:0]u8 {
+    if (value.len == 0) return emptyZSlice();
+    return allocator.dupeZ(u8, value);
+}
+
 /// Borrowed movie description produced by the parser before ownership is moved
 /// into Movie. Slices in this struct are valid as long as the parser arena lives.
 pub const MovieSpec = struct {
@@ -349,6 +369,8 @@ pub const ValidationError = error{
 };
 
 pub const Movie = struct {
+    arena: std.heap.ArenaAllocator,
+
     /// Owned, NUL-terminated version string for direct C ABI borrowing.
     version: [:0]u8,
     view_box_width: f32,
@@ -384,68 +406,47 @@ pub const Movie = struct {
     pub fn initWithOptions(allocator: std.mem.Allocator, spec: MovieSpec, options: MovieInitOptions) !Movie {
         try validateSpecWithLimits(spec, options.limits);
 
-        var assets = try allocator.alloc(Asset, spec.assets.len);
-        errdefer allocator.free(assets);
-        var initialized_assets: usize = 0;
-        errdefer {
-            for (assets[0..initialized_assets]) |*asset| {
-                asset.deinit(allocator);
-            }
-        }
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const owned_allocator = arena.allocator();
+
+        var assets = try allocSlice(Asset, owned_allocator, spec.assets.len);
         for (spec.assets, 0..) |asset_spec, index| {
-            assets[index] = try Asset.init(allocator, asset_spec);
-            initialized_assets += 1;
+            assets[index] = try Asset.initPooled(owned_allocator, asset_spec);
         }
 
-        var sprites = try allocator.alloc(Sprite, spec.sprites.len);
-        errdefer allocator.free(sprites);
-        var initialized_sprites: usize = 0;
-        errdefer {
-            for (sprites[0..initialized_sprites]) |*sprite| {
-                sprite.deinit(allocator);
-            }
-        }
+        var sprites = try allocSlice(Sprite, owned_allocator, spec.sprites.len);
         for (spec.sprites, 0..) |sprite_spec, index| {
-            sprites[index] = try Sprite.init(allocator, sprite_spec);
-            initialized_sprites += 1;
+            sprites[index] = try Sprite.initPooled(owned_allocator, sprite_spec);
         }
 
-        var audios = try allocator.alloc(Audio, spec.audios.len);
-        errdefer allocator.free(audios);
-        var initialized_audios: usize = 0;
-        errdefer {
-            for (audios[0..initialized_audios]) |*audio| {
-                audio.deinit(allocator);
-            }
-        }
+        var audios = try allocSlice(Audio, owned_allocator, spec.audios.len);
         for (spec.audios, 0..) |audio_spec, index| {
-            audios[index] = try Audio.init(allocator, audio_spec);
-            initialized_audios += 1;
+            audios[index] = try Audio.initPooled(owned_allocator, audio_spec);
         }
 
         const metadata = if (options.build_metadata_tables)
-            try buildMetadataTables(allocator, sprites, options.limits, options.build_path_commands)
+            try buildMetadataTables(owned_allocator, allocator, sprites, options.limits, options.build_path_commands)
         else
             MetadataTables.empty();
-        errdefer metadata.deinit(allocator);
 
         const render_data = if (options.build_render_data)
-            try buildRenderData(allocator, sprites, spec.frames)
+            try buildRenderData(owned_allocator, allocator, sprites, spec.frames)
         else
             RenderData.empty();
-        errdefer render_data.deinit(allocator);
         const visual_frame_indices = if (options.build_visual_frame_indices and options.build_render_data)
             try buildVisualFrameIndices(
-                allocator,
+                owned_allocator,
                 render_data.items,
                 render_data.item_ranges,
             )
         else
             emptySlice(u32);
-        errdefer allocator.free(visual_frame_indices);
+        const version = try dupeZSlice(owned_allocator, spec.version);
 
         return .{
-            .version = try allocator.dupeZ(u8, spec.version),
+            .arena = arena,
+            .version = version,
             .view_box_width = spec.view_box_width,
             .view_box_height = spec.view_box_height,
             .fps = spec.fps,
@@ -467,25 +468,8 @@ pub const Movie = struct {
 
     /// Release all owned tables, strings, assets, sprites, and audio metadata.
     pub fn deinit(self: *Movie, allocator: std.mem.Allocator) void {
-        self.metadata.deinit(allocator);
-        allocator.free(self.render_commands);
-        allocator.free(self.render_frame_ranges);
-        allocator.free(self.render_items);
-        allocator.free(self.render_item_frame_ranges);
-        allocator.free(self.visual_frame_indices);
-        for (self.assets) |*asset| {
-            asset.deinit(allocator);
-        }
-        allocator.free(self.assets);
-        for (self.sprites) |*sprite| {
-            sprite.deinit(allocator);
-        }
-        allocator.free(self.sprites);
-        for (self.audios) |*audio| {
-            audio.deinit(allocator);
-        }
-        allocator.free(self.audios);
-        allocator.free(self.version);
+        _ = allocator;
+        self.arena.deinit();
         self.* = undefined;
     }
 
@@ -619,6 +603,15 @@ pub const Asset = struct {
         };
     }
 
+    fn initPooled(allocator: std.mem.Allocator, spec: AssetSpec) !Asset {
+        return .{
+            .key = try dupeZSlice(allocator, spec.key),
+            .kind = spec.kind,
+            .bytes = try dupeSlice(u8, allocator, spec.bytes),
+            .filename = try dupeZSlice(allocator, spec.filename),
+        };
+    }
+
     pub fn deinit(self: *Asset, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
         allocator.free(self.bytes);
@@ -637,6 +630,16 @@ pub const Audio = struct {
     pub fn init(allocator: std.mem.Allocator, spec: AudioSpec) !Audio {
         return .{
             .audio_key = try allocator.dupeZ(u8, spec.audio_key),
+            .start_frame = spec.start_frame,
+            .end_frame = spec.end_frame,
+            .start_time_ms = spec.start_time_ms,
+            .total_time_ms = spec.total_time_ms,
+        };
+    }
+
+    fn initPooled(allocator: std.mem.Allocator, spec: AudioSpec) !Audio {
+        return .{
+            .audio_key = try dupeZSlice(allocator, spec.audio_key),
             .start_frame = spec.start_frame,
             .end_frame = spec.end_frame,
             .start_time_ms = spec.start_time_ms,
@@ -680,6 +683,22 @@ pub const Sprite = struct {
         return .{ .image_key = image_key, .matte_key = matte_key, .frames = frames };
     }
 
+    fn initPooled(allocator: std.mem.Allocator, spec: SpriteSpec) !Sprite {
+        if (std.mem.indexOfScalar(u8, spec.image_key, 0) != null) return error.InvalidSpriteKey;
+        if (std.mem.indexOfScalar(u8, spec.matte_key, 0) != null) return error.InvalidSpriteKey;
+
+        var frames = try allocSlice(OwnedFrame, allocator, spec.frames.len);
+        for (spec.frames, 0..) |frame_spec, index| {
+            frames[index] = try OwnedFrame.initPooled(allocator, frame_spec);
+        }
+
+        return .{
+            .image_key = try dupeZSlice(allocator, spec.image_key),
+            .matte_key = try dupeZSlice(allocator, spec.matte_key),
+            .frames = frames,
+        };
+    }
+
     pub fn deinit(self: *Sprite, allocator: std.mem.Allocator) void {
         for (self.frames) |*frame| {
             frame.deinit(allocator);
@@ -717,6 +736,19 @@ pub const OwnedFrame = struct {
         return .{
             .frame = spec.frame,
             .clip_path = try allocator.dupeZ(u8, spec.clip_path),
+            .shapes = shapes,
+        };
+    }
+
+    fn initPooled(allocator: std.mem.Allocator, spec: FrameSpec) !OwnedFrame {
+        var shapes = try allocSlice(Shape, allocator, spec.shapes.len);
+        for (spec.shapes, 0..) |shape_spec, index| {
+            shapes[index] = try Shape.initPooled(allocator, shape_spec);
+        }
+
+        return .{
+            .frame = spec.frame,
+            .clip_path = try dupeZSlice(allocator, spec.clip_path),
             .shapes = shapes,
         };
     }
@@ -765,6 +797,19 @@ pub const Shape = struct {
         };
     }
 
+    fn initPooled(allocator: std.mem.Allocator, spec: ShapeSpec) !Shape {
+        return .{
+            .shape_type = spec.shape_type,
+            .path_data = try dupeZSlice(allocator, spec.path_data),
+            .rect = spec.rect,
+            .ellipse = spec.ellipse,
+            .styles = spec.styles,
+            .transform = spec.transform,
+            .has_styles = spec.has_styles,
+            .has_transform = spec.has_transform,
+        };
+    }
+
     pub fn deinit(self: *Shape, allocator: std.mem.Allocator) void {
         allocator.free(self.path_data);
         self.* = undefined;
@@ -773,6 +818,7 @@ pub const Shape = struct {
 
 fn buildMetadataTables(
     allocator: std.mem.Allocator,
+    scratch_allocator: std.mem.Allocator,
     sprites: []const Sprite,
     limits: ModelLimits,
     build_path_commands: bool,
@@ -789,25 +835,18 @@ fn buildMetadataTables(
         }
     }
 
-    var sprite_records = try allocator.alloc(SpriteRecord, sprites.len);
-    errdefer allocator.free(sprite_records);
-    var frame_records = try allocator.alloc(FrameRecord, frame_total);
-    errdefer allocator.free(frame_records);
-    var sprite_frame_ranges = try allocator.alloc(RenderRange, sprites.len);
-    errdefer allocator.free(sprite_frame_ranges);
-    var shape_records = try allocator.alloc(ShapeRecord, shape_total);
-    errdefer allocator.free(shape_records);
-    var frame_shape_ranges = try allocator.alloc(RenderRange, frame_total);
-    errdefer allocator.free(frame_shape_ranges);
-    var frame_clip_path_command_ranges = try allocator.alloc(RenderRange, frame_total);
-    errdefer allocator.free(frame_clip_path_command_ranges);
-    var shape_path_command_ranges = try allocator.alloc(RenderRange, shape_total);
-    errdefer allocator.free(shape_path_command_ranges);
+    var sprite_records = try allocSlice(SpriteRecord, allocator, sprites.len);
+    var frame_records = try allocSlice(FrameRecord, allocator, frame_total);
+    var sprite_frame_ranges = try allocSlice(RenderRange, allocator, sprites.len);
+    var shape_records = try allocSlice(ShapeRecord, allocator, shape_total);
+    var frame_shape_ranges = try allocSlice(RenderRange, allocator, frame_total);
+    var frame_clip_path_command_ranges = try allocSlice(RenderRange, allocator, frame_total);
+    var shape_path_command_ranges = try allocSlice(RenderRange, allocator, shape_total);
 
     var clip_path_commands: std.ArrayList(PathCommand) = .empty;
-    defer clip_path_commands.deinit(allocator);
+    defer clip_path_commands.deinit(scratch_allocator);
     var shape_path_commands: std.ArrayList(PathCommand) = .empty;
-    defer shape_path_commands.deinit(allocator);
+    defer shape_path_commands.deinit(scratch_allocator);
 
     var frame_index: usize = 0;
     var shape_index: usize = 0;
@@ -830,9 +869,9 @@ fn buildMetadataTables(
             const clip_path_command_count = count: {
                 if (!build_path_commands) break :count 0;
                 if (frame.clip_path.len == 0) break :count 0;
-                const parsed_clip_path_commands = try svg_path.parse(allocator, frame.clip_path);
-                defer allocator.free(parsed_clip_path_commands);
-                try appendPathCommands(allocator, &clip_path_commands, parsed_clip_path_commands, limits);
+                const parsed_clip_path_commands = try svg_path.parse(scratch_allocator, frame.clip_path);
+                defer scratch_allocator.free(parsed_clip_path_commands);
+                try appendPathCommands(scratch_allocator, &clip_path_commands, parsed_clip_path_commands, limits);
                 break :count parsed_clip_path_commands.len;
             };
             frame_clip_path_command_ranges[frame_index] = .{
@@ -848,9 +887,9 @@ fn buildMetadataTables(
                     if (!build_path_commands) break :count 0;
                     if (shape.shape_type != .shape) break :count 0;
                     if (shape.path_data.len == 0) break :count 0;
-                    const parsed_shape_path_commands = try svg_path.parse(allocator, shape.path_data);
-                    defer allocator.free(parsed_shape_path_commands);
-                    try appendPathCommands(allocator, &shape_path_commands, parsed_shape_path_commands, limits);
+                    const parsed_shape_path_commands = try svg_path.parse(scratch_allocator, shape.path_data);
+                    defer scratch_allocator.free(parsed_shape_path_commands);
+                    try appendPathCommands(scratch_allocator, &shape_path_commands, parsed_shape_path_commands, limits);
                     break :count parsed_shape_path_commands.len;
                 };
                 shape_path_command_ranges[shape_index] = .{
@@ -864,10 +903,8 @@ fn buildMetadataTables(
         }
     }
 
-    const clip_path_command_slice = try clip_path_commands.toOwnedSlice(allocator);
-    errdefer allocator.free(clip_path_command_slice);
-    const shape_path_command_slice = try shape_path_commands.toOwnedSlice(allocator);
-    errdefer allocator.free(shape_path_command_slice);
+    const clip_path_command_slice = try dupeSlice(PathCommand, allocator, clip_path_commands.items);
+    const shape_path_command_slice = try dupeSlice(PathCommand, allocator, shape_path_commands.items);
 
     return .{
         .sprite_records = sprite_records,
@@ -932,13 +969,18 @@ fn shapeRecord(shape: Shape) ShapeRecord {
     };
 }
 
-fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_count_value: i32) !RenderData {
+fn buildRenderData(
+    allocator: std.mem.Allocator,
+    scratch_allocator: std.mem.Allocator,
+    sprites: []const Sprite,
+    frame_count_value: i32,
+) !RenderData {
     const frame_count: usize = @intCast(frame_count_value);
-    var command_counts = try allocator.alloc(usize, frame_count);
-    defer allocator.free(command_counts);
+    var command_counts = try allocSlice(usize, scratch_allocator, frame_count);
+    defer scratch_allocator.free(command_counts);
     @memset(command_counts, 0);
-    var item_counts = try allocator.alloc(usize, frame_count);
-    defer allocator.free(item_counts);
+    var item_counts = try allocSlice(usize, scratch_allocator, frame_count);
+    defer scratch_allocator.free(item_counts);
     @memset(item_counts, 0);
 
     for (sprites, 0..) |sprite, sprite_index| {
@@ -954,10 +996,8 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
         }
     }
 
-    var command_ranges = try allocator.alloc(RenderRange, frame_count);
-    errdefer allocator.free(command_ranges);
-    var item_ranges = try allocator.alloc(RenderRange, frame_count);
-    errdefer allocator.free(item_ranges);
+    var command_ranges = try allocSlice(RenderRange, allocator, frame_count);
+    var item_ranges = try allocSlice(RenderRange, allocator, frame_count);
 
     var command_total: usize = 0;
     for (command_counts, 0..) |count, frame_index| {
@@ -976,10 +1016,8 @@ fn buildRenderData(allocator: std.mem.Allocator, sprites: []const Sprite, frame_
         item_total = std.math.add(usize, item_total, count) catch return error.InvalidFrameCount;
     }
 
-    var commands = try allocator.alloc(RenderCommand, command_total);
-    errdefer allocator.free(commands);
-    var items = try allocator.alloc(RenderItem, item_total);
-    errdefer allocator.free(items);
+    var commands = try allocSlice(RenderCommand, allocator, command_total);
+    var items = try allocSlice(RenderItem, allocator, item_total);
 
     for (command_ranges, 0..) |range, frame_index| {
         command_counts[frame_index] = range.start;
@@ -1066,8 +1104,7 @@ fn buildVisualFrameIndices(
     items: []const RenderItem,
     ranges: []const RenderRange,
 ) ![]u32 {
-    var indices = try allocator.alloc(u32, ranges.len);
-    errdefer allocator.free(indices);
+    var indices = try allocSlice(u32, allocator, ranges.len);
 
     for (ranges, 0..) |range, frame_index| {
         const current = items[range.start .. range.start + range.count];

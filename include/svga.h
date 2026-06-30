@@ -156,6 +156,16 @@ typedef struct svga_parse_options {
     size_t max_total_path_commands;
 } svga_parse_options_t;
 
+/** Model construction mode for explicit parse-mode entry points. */
+typedef enum svga_parse_model_mode {
+    /** Build metadata, SVG path command, render, and visual-frame tables. */
+    SVGA_PARSE_MODEL_MODE_FULL = 0,
+    /** Build metadata and SVG path command tables, but skip render tables. */
+    SVGA_PARSE_MODEL_MODE_NO_RENDER = 1,
+    /** Build metadata tables only; skip path command and render tables. */
+    SVGA_PARSE_MODEL_MODE_METADATA_ONLY = 2,
+} svga_parse_model_mode_t;
+
 /** Float rectangle in SVGA source units. */
 typedef struct svga_rect {
     float x;
@@ -922,6 +932,37 @@ svga_status_t svga_movie_parse_with_options(
 );
 
 /**
+ * Parses SVGA bytes with explicit parser limits and model construction mode.
+ *
+ * Existing parse APIs use SVGA_PARSE_MODEL_MODE_FULL. Lazy modes are intended
+ * for metadata/smoke-test callers that do not need all derived tables:
+ *
+ * - SVGA_PARSE_MODEL_MODE_NO_RENDER keeps metadata and path-command tables but
+ *   returns empty render and visual-frame tables.
+ * - SVGA_PARSE_MODEL_MODE_METADATA_ONLY keeps sprite/frame/shape metadata
+ *   tables but returns empty path-command, render, and visual-frame tables.
+ *
+ * Indexed queries for tables not built by the selected mode may return
+ * SVGA_STATUS_INVALID_ARGUMENT; table getters return OK with empty outputs.
+ * Render capability queries are also derived from the tables built by the
+ * selected mode, so use FULL mode when callers need true render capabilities.
+ *
+ * @param bytes Pointer to SVGA bytes. Must not be NULL when byte_count is non-zero.
+ * @param byte_count Number of bytes available at bytes. Must be greater than zero.
+ * @param options Optional parse limits. May be NULL for defaults.
+ * @param model_mode Construction mode. Must be a svga_parse_model_mode_t value.
+ * @param out_movie Receives a new movie handle on success. Must not be NULL.
+ * @return SVGA_STATUS_OK on success, otherwise parse, limit, validation, or allocation status.
+ */
+svga_status_t svga_movie_parse_with_options_and_model_mode(
+    const uint8_t *bytes,
+    size_t byte_count,
+    const svga_parse_options_t *options,
+    int32_t model_mode,
+    svga_movie_t **out_movie
+);
+
+/**
  * Parses an SVGA file from a UTF-8 filesystem path.
  *
  * Some targets, such as freestanding WASM and Emscripten builds, do not expose
@@ -949,6 +990,28 @@ svga_status_t svga_movie_parse_file(const char *path_utf8, svga_movie_t **out_mo
 svga_status_t svga_movie_parse_file_with_options(
     const char *path_utf8,
     const svga_parse_options_t *options,
+    svga_movie_t **out_movie
+);
+
+/**
+ * Parses an SVGA file with explicit parser limits and model construction mode.
+ *
+ * Existing file parse APIs use SVGA_PARSE_MODEL_MODE_FULL. See
+ * svga_movie_parse_with_options_and_model_mode() for lazy-mode table behavior.
+ *
+ * Some targets, such as freestanding WASM and Emscripten builds, do not expose
+ * filesystem access through this ABI and return SVGA_STATUS_UNSUPPORTED.
+ *
+ * @param path_utf8 NUL-terminated UTF-8 path to an SVGA file. Must not be NULL or empty.
+ * @param options Optional parse limits. May be NULL for defaults.
+ * @param model_mode Construction mode. Must be a svga_parse_model_mode_t value.
+ * @param out_movie Receives a new movie handle on success. Must not be NULL.
+ * @return SVGA_STATUS_OK on success, otherwise IO, parse, limit, validation, or unsupported status.
+ */
+svga_status_t svga_movie_parse_file_with_options_and_model_mode(
+    const char *path_utf8,
+    const svga_parse_options_t *options,
+    int32_t model_mode,
     svga_movie_t **out_movie
 );
 

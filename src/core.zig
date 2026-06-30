@@ -6,10 +6,40 @@ const parser = @import("parser.zig");
 pub const default_max_input_bytes: usize = 64 * 1024 * 1024;
 pub const default_max_output_bytes: usize = parser.default_max_output_bytes;
 
+/// Model construction profile used after parser metadata has been decoded.
+pub const ParseModelMode = enum {
+    /// Build the same metadata, path-command, render, and visual-frame tables as
+    /// earlier libsvga parse APIs.
+    full,
+    /// Build metadata and path-command tables, but skip render/visual tables.
+    no_render,
+    /// Build metadata tables only; skip parsed path commands and render/visual
+    /// tables.
+    metadata_only,
+
+    fn movieInitOptions(self: ParseModelMode, limits: model.ModelLimits) model.MovieInitOptions {
+        var options: model.MovieInitOptions = switch (self) {
+            .full => .{},
+            .no_render => .{
+                .build_render_data = false,
+                .build_visual_frame_indices = false,
+            },
+            .metadata_only => .{
+                .build_path_commands = false,
+                .build_render_data = false,
+                .build_visual_frame_indices = false,
+            },
+        };
+        options.limits = limits;
+        return options;
+    }
+};
+
 /// Parser memory limits. `max_output_bytes` caps decompressed zlib/ZIP payloads.
 pub const ParseOptions = struct {
     max_output_bytes: usize = default_max_output_bytes,
     model_limits: model.ModelLimits = .{},
+    model_mode: ParseModelMode = .full,
 };
 
 const has_network = switch (builtin.target.os.tag) {
@@ -23,6 +53,7 @@ pub const ParseFileOptions = struct {
     max_input_bytes: usize = default_max_input_bytes,
     max_output_bytes: usize = default_max_output_bytes,
     model_limits: model.ModelLimits = .{},
+    model_mode: ParseModelMode = .full,
 };
 
 /// Download parser limits. The default matches ParseFileOptions so every
@@ -31,6 +62,7 @@ pub const DownloadOptions = struct {
     max_input_bytes: usize = default_max_input_bytes,
     max_output_bytes: usize = default_max_output_bytes,
     model_limits: model.ModelLimits = .{},
+    model_mode: ParseModelMode = .full,
 };
 
 /// Parse SVGA bytes into an owned, immutable Movie.
@@ -52,7 +84,11 @@ pub fn parseMovieWithOptions(allocator: std.mem.Allocator, bytes: []const u8, op
     const movie = try allocator.create(model.Movie);
     errdefer allocator.destroy(movie);
 
-    movie.* = try model.Movie.initWithLimits(allocator, parsed.spec, options.model_limits);
+    movie.* = try model.Movie.initWithOptions(
+        allocator,
+        parsed.spec,
+        options.model_mode.movieInitOptions(options.model_limits),
+    );
     return movie;
 }
 
@@ -68,6 +104,7 @@ pub fn parseMovieFile(
     return parseMovieWithOptions(allocator, input, .{
         .max_output_bytes = options.max_output_bytes,
         .model_limits = options.model_limits,
+        .model_mode = options.model_mode,
     });
 }
 
@@ -87,6 +124,7 @@ pub fn downloadMovie(
     return parseMovieWithOptions(allocator, input, .{
         .max_output_bytes = options.max_output_bytes,
         .model_limits = options.model_limits,
+        .model_mode = options.model_mode,
     });
 }
 
@@ -234,6 +272,37 @@ test "core parses and destroys a movie from a filesystem path" {
     defer destroyMovie(std.testing.allocator, movie);
 
     try std.testing.expectEqual(@as(i32, 60), movie.frames);
+}
+
+test "core parse model mode can skip render tables while keeping metadata" {
+    const proto = [_]u8{
+        0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
+        0x12, 0x0e, 0x0d, 0x00, 0x00, 0xa0, 0x43,
+        0x15, 0x00, 0x00, 0x70, 0x43, 0x18, 0x1e,
+        0x20, 0x3c, 0x1a, 0x0d, 0x0a, 0x04, 'h',
+        'e',  'r',  'o',  0x12, 0x05, 'h',  'e',
+        'r',  'o',  '0',  0x22, 0x18, 0x0a, 0x04,
+        'h',  'e',  'r',  'o',  0x12, 0x10, 0x0d,
+        0x00, 0x00, 0x80, 0x3f, 0x2a, 0x09, 0x08,
+        0x01, 0x1a, 0x05, 0x0d, 0x00, 0x00, 0x20,
+        0x41,
+    };
+
+    const zip = try storedZip(std.testing.allocator, "movie.binary", &proto);
+    defer std.testing.allocator.free(zip);
+
+    const movie = try parseMovieWithOptions(std.testing.allocator, zip, .{
+        .model_mode = .metadata_only,
+    });
+    defer destroyMovie(std.testing.allocator, movie);
+
+    try std.testing.expectEqual(@as(usize, 1), movie.metadata.sprite_records.len);
+    try std.testing.expectEqual(@as(usize, 1), movie.metadata.frame_records.len);
+    try std.testing.expectEqual(@as(usize, 1), movie.metadata.shape_records.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.metadata.clip_path_commands.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.metadata.shape_path_commands.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.render_frame_ranges.len);
+    try std.testing.expectEqual(@as(usize, 0), movie.visual_frame_indices.len);
 }
 
 test "core download rejects empty URLs before network access" {

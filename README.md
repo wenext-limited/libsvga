@@ -180,6 +180,15 @@ void svga_movie_destroy(svga_movie_t *movie);
 
 Strings and byte buffers returned through info structs are borrowed from the
 movie handle and remain valid until `svga_movie_destroy`.
+The default parse APIs build full metadata, SVG path-command, render, and
+visual-frame tables. Callers that only need metadata can use
+`svga_movie_parse_with_options_and_model_mode` or
+`svga_movie_parse_file_with_options_and_model_mode` with
+`SVGA_PARSE_MODEL_MODE_NO_RENDER` or `SVGA_PARSE_MODEL_MODE_METADATA_ONLY` to
+skip selected derived tables. Existing `svga_parse_options_t` layout remains
+unchanged for ABI compatibility. Render capability queries are derived from the
+built render tables, so use the default full mode when capability inspection is
+required.
 `svga_movie_parse_file` reads local filesystem paths in Zig before parsing, so
 platform bindings do not need to materialize an intermediate byte buffer when
 they already have a file URL.
@@ -220,8 +229,8 @@ system zlib by default; portable release packages keep `-Dsystem-zlib=false` so
 they do not require a target zlib at package build time. On the 3,374-file COS
 production zlib corpus with `ITERATIONS=3`:
 
-- `zig/libsvga`: `1812952.9 ns_per_parse`
-- `objc/SVGAPlayer-iOS`: `4814519.5 ns_per_parse`
+- `zig/libsvga`: `1661328.3 ns_per_parse`
+- `objc/SVGAPlayer-iOS`: `4571168.0 ns_per_parse`
 
 Use `zig build -Doptimize=ReleaseFast phase-bench -- <fixture-dir>` for
 internal phase timings.
