@@ -1174,7 +1174,9 @@ fn inflateWithStdFlate(
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
-    var window: [flate.max_window_len]u8 = undefined;
+    // Use direct mode so fixed-block back-references write into the growing
+    // output buffer instead of the std flate indirect reader's fixed buffer.
+    var window: [0]u8 = .{};
     var decompress: flate.Decompress = .init(&input, container, &window);
     decompress.reader.appendRemaining(allocator, &output, readerLimitForMax(max_output_bytes)) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -1309,6 +1311,34 @@ test "metadata parser rejects zlib output above configured limit" {
     );
 }
 
+test "zlib inflater handles back-reference writes at history boundary" {
+    const compressed = [_]u8{
+        120, 218, 237, 193, 49, 1, 0, 0, 0, 194, 160, 108, 235, 95, 202, 18,
+        158, 64, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 111, 3, 63, 238, 113, 124,
+    };
+    const inflated = try inflateZlib(std.testing.allocator, &compressed, 70_000);
+    defer std.testing.allocator.free(inflated);
+
+    try std.testing.expectEqual(@as(usize, 70_000), inflated.len);
+    try std.testing.expect(std.mem.allEqual(u8, inflated, 'A'));
+}
+
+test "zlib inflater handles fixed-block match across output boundary" {
+    const output_len = 1 + 258 * 272;
+    const compressed = try fixedBackReferenceZlib(std.testing.allocator, output_len);
+    defer std.testing.allocator.free(compressed);
+
+    const inflated = try inflateZlib(std.testing.allocator, compressed, output_len);
+    defer std.testing.allocator.free(inflated);
+
+    try std.testing.expectEqual(@as(usize, output_len), inflated.len);
+    try std.testing.expect(std.mem.allEqual(u8, inflated, 'A'));
+}
+
 test "metadata parser applies output limit across all zip entries" {
     const proto = [_]u8{
         0x0a, 0x05, '2',  '.',  '1',  '.',  '0',
@@ -1424,6 +1454,113 @@ fn storedZlib(test_allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     std.mem.writeInt(u32, bytes.items[7 + data.len ..][0..4], std.hash.Adler32.hash(data), .big);
 
     return bytes.toOwnedSlice(test_allocator);
+}
+
+fn fixedBackReferenceZlib(test_allocator: std.mem.Allocator, output_len: usize) ![]u8 {
+    if (output_len == 0 or (output_len - 1) % 258 != 0) return error.InvalidData;
+
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(test_allocator);
+
+    try bytes.append(test_allocator, 0x78);
+    try bytes.append(test_allocator, 0x01);
+
+    var writer = DeflateBitWriter{
+        .allocator = test_allocator,
+        .bytes = &bytes,
+    };
+    try writer.writeBits(0b011, 3); // final fixed-Huffman block.
+    try writer.writeFixedSymbol('A');
+
+    var remaining = output_len - 1;
+    while (remaining != 0) : (remaining -= 258) {
+        try writer.writeFixedSymbol(285); // length 258, no extra bits.
+        try writer.writeBits(0, 5); // distance 1.
+    }
+    try writer.writeFixedSymbol(256);
+    try writer.flush();
+
+    const adler = adler32RepeatedByte('A', output_len);
+    const footer_start = bytes.items.len;
+    try bytes.resize(test_allocator, footer_start + 4);
+    std.mem.writeInt(u32, bytes.items[footer_start..][0..4], adler, .big);
+
+    return bytes.toOwnedSlice(test_allocator);
+}
+
+const DeflateBitWriter = struct {
+    allocator: std.mem.Allocator,
+    bytes: *std.ArrayList(u8),
+    current: u8 = 0,
+    bit_count: u4 = 0,
+
+    fn writeFixedSymbol(self: *DeflateBitWriter, symbol: u16) !void {
+        const code = fixedHuffmanCode(symbol);
+        try self.writeBits(code.bits, code.len);
+    }
+
+    fn writeBits(self: *DeflateBitWriter, value: u16, len: u4) !void {
+        var bits = value;
+        var remaining = len;
+        while (remaining != 0) : (remaining -= 1) {
+            self.current |= @as(u8, @intCast(bits & 1)) << @intCast(self.bit_count);
+            bits >>= 1;
+            self.bit_count += 1;
+
+            if (self.bit_count == 8) {
+                try self.bytes.append(self.allocator, self.current);
+                self.current = 0;
+                self.bit_count = 0;
+            }
+        }
+    }
+
+    fn flush(self: *DeflateBitWriter) !void {
+        if (self.bit_count == 0) return;
+        try self.bytes.append(self.allocator, self.current);
+        self.current = 0;
+        self.bit_count = 0;
+    }
+};
+
+fn fixedHuffmanCode(symbol: u16) struct { bits: u16, len: u4 } {
+    if (symbol <= 143) return .{
+        .bits = reverseBits(0x30 + symbol, 8),
+        .len = 8,
+    };
+    if (symbol <= 255) return .{
+        .bits = reverseBits(0x190 + symbol - 144, 9),
+        .len = 9,
+    };
+    if (symbol <= 279) return .{
+        .bits = reverseBits(symbol - 256, 7),
+        .len = 7,
+    };
+    return .{
+        .bits = reverseBits(0xc0 + symbol - 280, 8),
+        .len = 8,
+    };
+}
+
+fn reverseBits(value: u16, len: u4) u16 {
+    var result: u16 = 0;
+    var remaining = len;
+    while (remaining != 0) : (remaining -= 1) {
+        result = (result << 1) | ((value >> @intCast(len - remaining)) & 1);
+    }
+    return result;
+}
+
+fn adler32RepeatedByte(byte: u8, len: usize) u32 {
+    var adler = std.hash.Adler32{};
+    const chunk = [_]u8{byte} ** 1024;
+    var remaining = len;
+    while (remaining != 0) {
+        const n = @min(remaining, chunk.len);
+        adler.update(chunk[0..n]);
+        remaining -= n;
+    }
+    return adler.adler;
 }
 
 fn appendStoredZipEntry(
