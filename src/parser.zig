@@ -106,7 +106,7 @@ pub fn isZip(bytes: []const u8) bool {
 ///
 /// This keeps obviously non-SVGA bytes out of platform zlib implementations and
 /// makes invalid inputs fail consistently across macOS, Linux, Android, and WASM.
-fn isZlibStream(bytes: []const u8) bool {
+pub fn isZlibStream(bytes: []const u8) bool {
     if (bytes.len < 2) return false;
     const cmf = bytes[0];
     const flg = bytes[1];
@@ -1161,6 +1161,11 @@ fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8, max_output_bytes
             else => return error.InvalidZlibStream,
         }
     }
+}
+
+/// Internal benchmark hook. Production callers should use parseMovieMetadata*.
+pub fn inflateZlibForBenchmark(allocator: std.mem.Allocator, bytes: []const u8, max_output_bytes: usize) ParseError![]u8 {
+    return inflateZlib(allocator, bytes, max_output_bytes);
 }
 
 fn inflateWithStdFlate(

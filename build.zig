@@ -13,6 +13,11 @@ pub fn build(b: *std.Build) void {
         "build-probe",
         "Build and install the svga_probe executable",
     ) orelse true;
+    const build_phase_bench = b.option(
+        bool,
+        "build-phase-bench",
+        "Build and install the svga_phase_bench executable",
+    ) orelse true;
     const release_version = b.option(
         []const u8,
         "release-version",
@@ -101,6 +106,27 @@ pub fn build(b: *std.Build) void {
             run_probe.addArgs(args);
         }
         probe_step.dependOn(&run_probe.step);
+    }
+
+    const phase_bench_step = b.step("phase-bench", "Benchmark libsvga parse phases over SVGA fixtures");
+    if (build_phase_bench and canBuildProbe(target.result)) {
+        const phase_bench_module = b.createModule(.{
+            .root_source_file = b.path("tools/svga_phase_bench.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        phase_bench_module.addImport("libsvga", package_module);
+        const phase_bench = b.addExecutable(.{
+            .name = "svga_phase_bench",
+            .root_module = phase_bench_module,
+        });
+        b.installArtifact(phase_bench);
+
+        const run_phase_bench = b.addRunArtifact(phase_bench);
+        if (b.args) |args| {
+            run_phase_bench.addArgs(args);
+        }
+        phase_bench_step.dependOn(&run_phase_bench.step);
     }
 
     const tests = b.addTest(.{
