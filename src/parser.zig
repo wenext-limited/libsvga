@@ -1318,12 +1318,12 @@ test "metadata parser rejects zlib output above configured limit" {
 
 test "zlib inflater handles back-reference writes at history boundary" {
     const compressed = [_]u8{
-        120, 218, 237, 193, 49, 1, 0, 0, 0, 194, 160, 108, 235, 95, 202, 18,
-        158, 64, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 111, 3, 63, 238, 113, 124,
+        120, 218, 237, 193, 49, 1, 0,   0, 0,  194, 160, 108, 235, 95, 202, 18,
+        158, 64,  1,   0,   0,  0, 0,   0, 0,  0,   0,   0,   0,   0,  0,   0,
+        0,   0,   0,   0,   0,  0, 0,   0, 0,  0,   0,   0,   0,   0,  0,   0,
+        0,   0,   0,   0,   0,  0, 0,   0, 0,  0,   0,   0,   0,   0,  0,   0,
+        0,   0,   0,   0,   0,  0, 0,   0, 0,  0,   0,   0,   0,   0,  0,   0,
+        0,   0,   0,   0,   0,  0, 111, 3, 63, 238, 113, 124,
     };
     const inflated = try inflateZlib(std.testing.allocator, &compressed, 70_000);
     defer std.testing.allocator.free(inflated);

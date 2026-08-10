@@ -71,7 +71,7 @@ jobs:
       - name: Build target
         env:
           ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dsystem-zlib=false -Dbuild-probe=false
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dsystem-zlib=false -Dbuild-probe=false -Dbuild-phase-bench=false
 
   package-smoke:
     name: Package smoke test
