@@ -333,7 +333,8 @@ fn parseTransform(bytes: []const u8) ParseError!model.Transform {
 
 fn parseShape(allocator: std.mem.Allocator, bytes: []const u8) ParseError!model.ShapeSpec {
     var reader = ProtoReader{ .bytes = bytes };
-    var shape = model.ShapeSpec{};
+    // Shape is enum value zero, so protobuf encoders may omit the type field.
+    var shape = model.ShapeSpec{ .shape_type = .shape };
 
     while (!reader.isDone()) {
         const tag = try reader.readTag();
@@ -1439,6 +1440,20 @@ test "protobuf parser reads sprite frame geometry and keep shape marker" {
     try std.testing.expectEqual(@as(u32, 1), frame.shape_count);
     try std.testing.expectEqual(@as(i32, @intFromEnum(model.ShapeType.keep)), frame.first_shape_type);
     try std.testing.expectEqual(@as(u8, 1), frame.is_keep_frame);
+}
+
+test "protobuf path shape defaults omitted type field to shape" {
+    const bytes = [_]u8{
+        // ShapeEntity.shape (field 2), containing ShapeArgs.d (field 1).
+        0x12, 0x0a, 0x0a, 0x08, 'M', '0', ' ', '0', 'L', '1', ' ', '1',
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const shape = try parseShape(arena.allocator(), &bytes);
+    try std.testing.expectEqual(model.ShapeType.shape, shape.shape_type);
+    try std.testing.expectEqualStrings("M0 0L1 1", shape.path_data);
 }
 
 fn storedZlib(test_allocator: std.mem.Allocator, data: []const u8) ![]u8 {

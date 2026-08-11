@@ -64,7 +64,7 @@ creating the XCFramework and verifies 64-bit Mach-O archive member alignment.
 Build release archives with:
 
 ```sh
-zig build package-release -Doptimize=ReleaseFast -Drelease-version=0.2.5
+zig build package-release -Doptimize=ReleaseFast -Drelease-version=0.2.7
 ```
 
 The package step produces:
