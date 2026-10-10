@@ -152,6 +152,9 @@ fn defaultSystemZlib(target: std.Target) bool {
 }
 
 fn linkZlib(b: *std.Build, module: *std.Build.Module) void {
+    // System zlib needs libc initialization, not just a transitive ELF
+    // dependency. Otherwise Linux tests use Zig's no-libc startup path.
+    module.link_libc = true;
     // Zig does not infer these search paths from --sysroot for iOS targets.
     if (isDarwin(module.resolved_target.?.result.os.tag)) {
         if (b.sysroot) |sdk| {
