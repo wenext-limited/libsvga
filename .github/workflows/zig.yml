@@ -29,7 +29,7 @@ jobs:
       - name: Test with system zlib
         env:
           ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
-        run: zig build test
+        run: zig build test -Dsystem-zlib=true
 
       - name: Test with portable inflate
         env:
@@ -118,3 +118,6 @@ jobs:
         run: |
           test -f zig-out/apple-ci-release/libsvga-static-ci.xcframework.zip
           unzip -l zig-out/apple-ci-release/libsvga-static-ci.xcframework.zip | grep 'libsvga-static.xcframework/Info.plist'
+
+      - name: Verify Apple zlib autolinking
+        run: sh tools/verify_apple_zlib_link.sh zig-out/apple-ci-release/pkg/apple-xcframework/libsvga-static.xcframework

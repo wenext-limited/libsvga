@@ -27,6 +27,9 @@ jobs:
           ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache
         run: zig build package-release -Doptimize=ReleaseFast -Drelease-version="${{ github.event.release.tag_name }}"
 
+      - name: Verify Apple zlib autolinking
+        run: sh tools/verify_apple_zlib_link.sh zig-out/release/pkg/apple-xcframework/libsvga-static.xcframework
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:

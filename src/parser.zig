@@ -1112,8 +1112,9 @@ fn isMp3Data(bytes: []const u8) bool {
 
 /// Inflate a standalone zlib stream.
 ///
-/// The default build uses Zig's std.compress.flate backend so release artifacts
-/// stay self-contained. `-Dsystem-zlib=true` switches this path to libz.
+/// Darwin builds and Apple release slices default to libz. Other targets and
+/// portable release archives use std.compress.flate; -Dsystem-zlib overrides
+/// the backend for an individual build.
 fn inflateZlib(allocator: std.mem.Allocator, bytes: []const u8, max_output_bytes: usize) ParseError![]u8 {
     if (!comptime build_options.use_system_zlib) {
         return inflateWithStdFlate(

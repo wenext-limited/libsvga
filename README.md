@@ -49,9 +49,13 @@ ZIP/deflate payloads because it is materially faster on the production corpus.
 Pass `-Dsystem-zlib=false` to force Zig's portable `std.compress.flate`
 inflater. Non-Darwin builds default to the portable inflater.
 
-Release package builds pass `-Dsystem-zlib=false` explicitly so published
-portable archives and the SwiftPM XCFramework do not require consumers to link a
-target `libz`.
+Apple XCFramework release slices also use system zlib. Packaging resolves each
+slice's Xcode SDK, and the bundled module map automatically links `z` for
+Swift/Clang module consumers. C consumers linking the static library directly
+must pass `-lz`.
+
+Android and WASM release archives pass `-Dsystem-zlib=false` explicitly to stay
+self-contained. Their builds do not require an Apple SDK or target `libz`.
 
 On Darwin targets, `zig build` re-archives the installed static library with
 Apple `libtool`/`ranlib` so SwiftPM/Xcode's linker accepts
@@ -64,7 +68,7 @@ creating the XCFramework and verifies 64-bit Mach-O archive member alignment.
 Build release archives with:
 
 ```sh
-zig build package-release -Doptimize=ReleaseFast -Drelease-version=0.2.7
+zig build package-release -Doptimize=ReleaseFast -Drelease-version=0.2.8
 ```
 
 The package step produces:

@@ -45,8 +45,8 @@ pub fn build(b: *std.Build) void {
     ) orelse "15.0";
 
     // Make the zlib backend choice visible to parser.zig at comptime. Native
-    // Apple builds default to libz for speed; packaged release artifacts pass
-    // -Dsystem-zlib=false below so they stay self-contained.
+    // Apple builds and XCFramework slices use libz for speed. Portable release
+    // artifacts explicitly keep the self-contained inflater.
     const options = b.addOptions();
     options.addOption(bool, "use_system_zlib", use_system_zlib);
 
@@ -57,7 +57,7 @@ pub fn build(b: *std.Build) void {
     });
     static_module.addOptions("build_options", options);
     if (use_system_zlib) {
-        static_module.linkSystemLibrary("z", .{});
+        linkZlib(b, static_module);
     }
     const package_module = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
@@ -66,7 +66,7 @@ pub fn build(b: *std.Build) void {
     });
     package_module.addOptions("build_options", options);
     if (use_system_zlib) {
-        package_module.linkSystemLibrary("z", .{});
+        linkZlib(b, package_module);
     }
 
     const lib = b.addLibrary(.{
@@ -149,6 +149,18 @@ fn isDarwin(os_tag: std.Target.Os.Tag) bool {
 
 fn defaultSystemZlib(target: std.Target) bool {
     return isDarwin(target.os.tag);
+}
+
+fn linkZlib(b: *std.Build, module: *std.Build.Module) void {
+    // Zig does not infer these search paths from --sysroot for iOS targets.
+    if (isDarwin(module.resolved_target.?.result.os.tag)) {
+        if (b.sysroot) |sdk| {
+            module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr", "include" }) });
+            // The Darwin linker prefixes library search paths with --sysroot.
+            module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        }
+    }
+    module.linkSystemLibrary("z", .{});
 }
 
 fn canBuildProbe(target: std.Target) bool {
@@ -316,6 +328,7 @@ fn addApplePackage(
         &mkdir_package.step,
         build_dir,
         "macos-arm64",
+        "macosx",
         b.fmt("aarch64-macos.{s}", .{macos_min_version}),
         optimize_arg,
     );
@@ -324,6 +337,7 @@ fn addApplePackage(
         &mkdir_package.step,
         build_dir,
         "ios-arm64",
+        "iphoneos",
         b.fmt("aarch64-ios.{s}", .{ios_min_version}),
         optimize_arg,
     );
@@ -332,6 +346,7 @@ fn addApplePackage(
         &mkdir_package.step,
         build_dir,
         "ios-simulator-arm64",
+        "iphonesimulator",
         b.fmt("aarch64-ios.{s}-simulator", .{ios_min_version}),
         optimize_arg,
     );
@@ -385,17 +400,20 @@ fn addAppleSlice(
     parent_step: *std.Build.Step,
     build_dir: []const u8,
     name: []const u8,
+    sdk: []const u8,
     target: []const u8,
     optimize_arg: []const u8,
 ) *std.Build.Step {
     const prefix = b.pathJoin(&.{ build_dir, name });
 
     const build_slice = sideEffectCommand(b, &.{
+        "sh",
+        "tools/build_apple_slice.sh",
         b.graph.zig_exe,
-        "build",
+        sdk,
         b.fmt("-Dtarget={s}", .{target}),
         b.fmt("-Doptimize={s}", .{optimize_arg}),
-        "-Dsystem-zlib=false",
+        "-Dsystem-zlib=true",
         "-Dbuild-probe=false",
         "-Dbuild-phase-bench=false",
         "-p",

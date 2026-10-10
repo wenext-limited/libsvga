@@ -3,6 +3,73 @@
 This file tracks the benchmark protocol and optimization backlog for libsvga
 parse performance. Keep it updated when measurements change.
 
+## October 10, 2026: Apple zlib and upstream Zig comparison
+
+The historical 3,374-file corpus below was unavailable. New measurements used
+the 175 zlib/protobuf fixtures in `../benchmarks/fixtures/svga` on macOS ARM64.
+Inputs were sorted and preloaded; each of five process runs used one warmup
+corpus pass followed by ten timed passes. Results are medians of run-average
+times, including teardown and excluding file I/O.
+
+| Public parsing path | Time per parse | Run-average range |
+| --- | ---: | ---: |
+| Rust `svga` 0.1.3, typed `Animation` plus geometry traversal | 539.13 us | 535.93–554.82 us |
+| libsvga 0.2.7, system zlib, full model | 716.42 us | 714.67–724.32 us |
+| libsvga 0.2.7, portable inflater, full model | 1,713.60 us | 1,690.06–1,737.44 us |
+| Archived Objective-C protobuf/inflate/geometry harness | 1,885.44 us | 1,852.30–1,930.15 us |
+| libsvga system zlib, metadata-only model | 670.18 us | 665.43–687.43 us |
+
+Per-file frame/image/sprite/audio counts agreed across implementations. This is
+not full semantic or rendering parity: libsvga's full mode additionally builds
+SVG path commands and render/visual tables; Rust retains a lossless document;
+the Objective-C harness is not the full player. The Objective-C harness drained
+an autorelease pool per file. Sources were libsvga `c7752fb`, Rust `dbd5293`,
+and SVGAPlayer-iOS `2e469f1`; the optimization builds used Zig 0.15.2,
+Rust 1.97.1 release, and Apple Clang 21 with `-O3`.
+
+Ablations: switching only the libsvga inflater saved 58.19% of total parse
+time. Skipping path/render/visual tables with metadata-only mode saved 6.45%.
+An explicit two-lane SIMD `computeFrame` experiment showed no reliable gain;
+the original ReleaseFast ARM64 code already generated SIMD instructions.
+
+The [official download index](https://ziglang.org/download/index.json) listed
+Zig 0.17.0 (October 1, 2026) as the latest stable release. Its official binary
+was downloaded separately and checked against the published SHA-256. An
+isolated **inflation-only** harness compiled the same direct-mode Reader code
+with Zig 0.15.2 and 0.17.0, using ReleaseFast/LLVM and the C allocator for both:
+
+| Zig version | Inflation time per file | Run-average range |
+| --- | ---: | ---: |
+| 0.15.2 | 1,341.70 us | 1,335.64–1,345.18 us |
+| 0.17.0 | 1,215.79 us | 1,178.90–1,231.22 us |
+
+This is a 9.38% inflation-time reduction, not an end-to-end libsvga speedup.
+Both versions' decompressed outputs matched system zlib byte-for-byte for all
+175 files during warmup. These numbers must not be directly combined with
+the full-parser numbers above: this harness uses a different allocator and
+does no protobuf/model work.
+
+Zig's [0.16.0 release notes](https://ziglang.org/download/0.16.0/release-notes.html#Add-Deflate-Compression-Simplify-Decompression)
+describe simpler decompression bit reading and report a 9.5% decompression
+improvement on their sample. The local 0.17.0 result supports improvement, but
+does not justify a toolchain migration for this Apple optimization. A 0.17.0
+compatibility probe also found Build API changes (`getInstallPath`, `sysroot`).
+The project remains on 0.15.2; Apple release slices now use system zlib with
+SDK discovery and module-map autolinking. Android/WASM packages stay portable.
+
+Validation: the complete release-package build passed all 68 steps, including
+all three Apple slices and seven portable targets. Both inflater configurations
+passed 48/48 native tests. Swift consumers linked all three Apple slices without
+an explicit `-lz`; a macOS consumer parsed a synthetic compressed movie. Removing
+`link "z"` from a temporary module-map copy caused the expected undefined
+inflate symbols. CI now checks Apple autolinking and explicitly selects system
+zlib in its system-backend test (the Linux default is portable).
+
+Local investigation artifacts (temporary, not required for builds):
+`/private/tmp/svga-threeway/` contains the comparison harness, raw runs, and
+fixture hashes; `/private/tmp/libsvga-upstream/` contains the isolated inflater
+harness, downloaded toolchain, and `inflate-results.json`.
+
 ## Benchmark Protocol
 
 Primary corpus:
